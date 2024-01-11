@@ -1,0 +1,40 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "me.cortex.vulkanite.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "iris.MixinNativeImageBackedTexture",
+    "iris.MixinGlResource",
+    "iris.MixinGlTexture",
+    "iris.MixinNewWorldRenderingPipeline",
+    "iris.MixinPackRenderTargetDirectives",
+    "iris.MixinPBRAtlasTexture",
+    "iris.MixinProgramSet",
+    "iris.MixinRenderTarget",
+    "iris.MixinShaderPackSourceNames",
+    "iris.MixinStandardMacros",
+    "minecraft.MixinAbstractTexture",
+    "minecraft.MixinMinecraftClient",
+    "minecraft.MixinSpriteAtlasTexture",
+    "sodium.MixinRenderRegionManager",
+    "sodium.MixinRenderSection",
+    "sodium.MixinRenderSectionManager",
+    "sodium.PendingSectionUploadAccessor",
+    "sodium.chunk.MixinChunkBuildResult",
+    "sodium.chunk.MixinChunkRenderRebuildTask",
+    "sodium.chunk.VertexFormatAccessor",
+    "sodium.gl.MixinCommandList",
+    "sodium.gl.MixinGlBufferArena",
+    "sodium.gl.MixinGLRenderDevice",
+    "sodium.gl.MixinMutableBuffer"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "mixins": [
+    "iris.MixinShaderStorageBuffer",
+    "iris.MixinShaderStorageBufferHolder",
+    "iris.ShaderStorageBufferHolderAccessor"
+  ]
+}
