@@ -20,4 +20,8 @@ public class VContext {
         cmd = new CommandManager(device, queueCount);
         properties = new DeviceProperties(device);
     }
+    
+    public void cleanup() {
+        properties.cleanup();
+    }
 }

@@ -111,37 +111,68 @@ public class VInitializer {
     private static VkLayerProperties.Buffer getInstanceLayers(MemoryStack stack) {
         int[] res = new int[1];
         _CHECK_(vkEnumerateInstanceLayerProperties(res, null));
-        VkLayerProperties.Buffer layerProperties = VkLayerProperties.calloc(res[0], stack);
-        _CHECK_(vkEnumerateInstanceLayerProperties(res, layerProperties));
-        if (res[0] != layerProperties.capacity())
-            throw new IllegalStateException();
-        return layerProperties;
+        // Allocate on heap to avoid stack overflow
+        VkLayerProperties.Buffer layerProperties = VkLayerProperties.calloc(res[0]);
+        try {
+            _CHECK_(vkEnumerateInstanceLayerProperties(res, layerProperties));
+            if (res[0] != layerProperties.capacity())
+                throw new IllegalStateException();
+            // Copy to stack-allocated buffer
+            VkLayerProperties.Buffer stackBuffer = VkLayerProperties.calloc(res[0], stack);
+            layerProperties.rewind();
+            stackBuffer.put(layerProperties);
+            stackBuffer.rewind();
+            return stackBuffer;
+        } finally {
+            layerProperties.free();
+        }
     }
 
     private static VkExtensionProperties.Buffer getInstanceExtensions(MemoryStack stack) {
         int[] res = new int[1];
         _CHECK_(vkEnumerateInstanceExtensionProperties((String) null, res, null));
-        VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.calloc(res[0], stack);
-        _CHECK_(vkEnumerateInstanceExtensionProperties((String) null, res, extensionProperties));
-        if (res[0] != extensionProperties.capacity())
-            throw new IllegalStateException();
-        return extensionProperties;
+        // Allocate on heap to avoid stack overflow
+        VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.calloc(res[0]);
+        try {
+            _CHECK_(vkEnumerateInstanceExtensionProperties((String) null, res, extensionProperties));
+            if (res[0] != extensionProperties.capacity())
+                throw new IllegalStateException();
+            // Copy to stack-allocated buffer
+            VkExtensionProperties.Buffer stackBuffer = VkExtensionProperties.calloc(res[0], stack);
+            extensionProperties.rewind();
+            stackBuffer.put(extensionProperties);
+            stackBuffer.rewind();
+            return stackBuffer;
+        } finally {
+            extensionProperties.free();
+        }
     }
 
     private PointerBuffer getPhysicalDevices(MemoryStack stack) {
         int[] res = new int[1];
         _CHECK_(vkEnumeratePhysicalDevices(instance, res, null));
-        PointerBuffer devices = stack.callocPointer(res[0]);
-        _CHECK_(vkEnumeratePhysicalDevices(instance, res, devices));
-        if (res[0] != devices.capacity())
-            throw new IllegalStateException();
-        return devices;
+        // Allocate on heap to avoid stack overflow
+        PointerBuffer devices = PointerBuffer.calloc(res[0]);
+        try {
+            _CHECK_(vkEnumeratePhysicalDevices(instance, res, devices));
+            if (res[0] != devices.capacity())
+                throw new IllegalStateException();
+            // Copy to stack-allocated buffer
+            PointerBuffer stackBuffer = stack.callocPointer(res[0]);
+            devices.rewind();
+            stackBuffer.put(devices);
+            stackBuffer.rewind();
+            return stackBuffer;
+        } finally {
+            devices.free();
+        }
     }
 
     private List<String> getDeviceExtensionStrings(VkPhysicalDevice device) {
         List<String> extensions = new ArrayList<>();
+        // Use heap allocation instead of stack to avoid stack overflow on systems with many extensions
         try (var stack = stackPush()) {
-            var eb = getDeviceExtensions(stack, device);
+            var eb = getDeviceExtensionsHeap(stack, device);
             for (var extension : eb) {
                 extensions.add(extension.extensionNameString());
             }
@@ -150,17 +181,31 @@ public class VInitializer {
     }
 
     private VkExtensionProperties.Buffer getDeviceExtensions(MemoryStack stack, long device) {
-        return getDeviceExtensions(stack, new VkPhysicalDevice(device, instance));
+        return getDeviceExtensionsHeap(stack, new VkPhysicalDevice(device, instance));
     }
 
     private VkExtensionProperties.Buffer getDeviceExtensions(MemoryStack stack, VkPhysicalDevice device) {
+        return getDeviceExtensionsHeap(stack, device);
+    }
+
+    private VkExtensionProperties.Buffer getDeviceExtensionsHeap(MemoryStack stack, VkPhysicalDevice device) {
         int[] res = new int[1];
         _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, res, null));
-        VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.calloc(res[0], stack);
-        _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, res, extensionProperties));
-        if (res[0] != extensionProperties.capacity())
-            throw new IllegalStateException();
-        return extensionProperties;
+        // Allocate on heap to avoid stack overflow
+        VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.calloc(res[0]);
+        try {
+            _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, res, extensionProperties));
+            if (res[0] != extensionProperties.capacity())
+                throw new IllegalStateException();
+            // Copy to stack-allocated buffer if needed by caller's MemoryStack lifecycle
+            VkExtensionProperties.Buffer stackBuffer = VkExtensionProperties.calloc(res[0], stack);
+            extensionProperties.rewind();
+            stackBuffer.put(extensionProperties);
+            stackBuffer.rewind();
+            return stackBuffer;
+        } finally {
+            extensionProperties.free();
+        }
     }
 
     public VContext createContext() {

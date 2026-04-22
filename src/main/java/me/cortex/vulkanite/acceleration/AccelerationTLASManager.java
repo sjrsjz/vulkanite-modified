@@ -220,7 +220,7 @@ public class AccelerationTLASManager {
         //Needs a gpu buffer for the instance data, this can be reused
         //private VkAccelerationStructureInstanceKHR.Buffer buffer;
 
-        private VkAccelerationStructureInstanceKHR.Buffer instances = VkAccelerationStructureInstanceKHR.calloc(120000);
+        private VkAccelerationStructureInstanceKHR.Buffer instances;
         private int[] instance2pointer = new int[120000];
         private int[] pointer2instance = new int[120000];
         private BitSet free = new BitSet(120000);//The reason this is needed is to give non used instance ids
@@ -228,6 +228,14 @@ public class AccelerationTLASManager {
 
         public TLASGeometryManager() {
             free.set(0, instance2pointer.length);
+            // Allocate on heap to avoid stack overflow
+            instances = VkAccelerationStructureInstanceKHR.calloc(120000);
+        }
+        
+        public void cleanup() {
+            if (instances != null) {
+                instances.free();
+            }
         }
 
 
@@ -533,5 +541,6 @@ public class AccelerationTLASManager {
         if (buildDataManager.sectionCount() != 0) {
             throw new IllegalStateException("Sections are not empty on cleanup");
         }
+        buildDataManager.cleanup();
     }
 }

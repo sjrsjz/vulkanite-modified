@@ -93,6 +93,7 @@ public class Vulkanite {
 
     public void destroy() {
         accelerationManager.cleanup();
+        ctx.cleanup();
     }
 
     private static VContext createVulkanContext() {
