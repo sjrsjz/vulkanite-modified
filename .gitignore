@@ -47,3 +47,6 @@ htmlcov/
 # PyTest
 .pytest_cache/
 ```
+
+bin/
+run/
