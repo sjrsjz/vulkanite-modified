@@ -259,7 +259,6 @@ public class MemoryManager {
                             .size(size)
                             .usage(usage),
                     VmaAllocationCreateInfo.calloc(stack)
-                            .usage(VMA_MEMORY_USAGE_AUTO)
                             .requiredFlags(properties),
                     alignment);
             return new VBuffer(alloc);

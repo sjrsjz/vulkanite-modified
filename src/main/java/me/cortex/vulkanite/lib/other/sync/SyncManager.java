@@ -2,6 +2,7 @@ package me.cortex.vulkanite.lib.other.sync;
 
 import me.cortex.vulkanite.client.Vulkanite;
 import me.cortex.vulkanite.lib.memory.HandleDescriptorManger;
+import me.cortex.vulkanite.lib.other.VUtil;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.vulkan.*;
 
@@ -36,8 +37,14 @@ import static org.lwjgl.vulkan.VK11.VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN
 public class SyncManager {
     private static final int EXTERNAL_SEMAPHORE_TYPE = Vulkanite.IS_WINDOWS?VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT:VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
     private final VkDevice device;
+    private volatile boolean deviceLost = false;
+
     public SyncManager(VkDevice device) {
         this.device = device;
+    }
+
+    public boolean isDeviceLost() {
+        return deviceLost;
     }
 
     public VFence createFence() {
@@ -155,8 +162,16 @@ public class SyncManager {
                     toRemove.add(cb.getKey());
                 } else if (status == VK_NOT_READY) {
                     continue;
+                } else {
+                    // Device lost or other error: log and remove the fence without
+                    // running the callback, since resources may be in an invalid state
+                    if (status == VK_ERROR_DEVICE_LOST) {
+                        deviceLost = true;
+                    }
+                    System.err.println("Warning: vkGetFenceStatus returned " + status
+                            + " (" + VUtil.translateVulkanResult(status) + "), removing fence without callback");
+                    toRemove.add(cb.getKey());
                 }
-                _CHECK_(status);
             }
             toRemove.forEach(callbacks::remove);
         }

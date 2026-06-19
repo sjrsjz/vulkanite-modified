@@ -19,6 +19,7 @@ import static org.lwjgl.util.vma.Vma.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIA
 import static org.lwjgl.vulkan.KHRBufferDeviceAddress.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR;
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.*;
 import static org.lwjgl.vulkan.VK10.*;
+import static org.lwjgl.vulkan.VK11.vkGetPhysicalDeviceProperties2;
 
 public class RaytracePipelineBuilder {
 
@@ -145,6 +146,25 @@ public class RaytracePipelineBuilder {
                 long handleSize = props.shaderGroupHandleSize();
                 long handleSizeAligned = alignUp(handleSize, props.shaderGroupHandleAlignment());
 
+                // If the cached properties returned 0, query directly as fallback
+                if (handleSize == 0) {
+                    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps =
+                            VkPhysicalDeviceRayTracingPipelinePropertiesKHR.calloc(stack)
+                                    .sType$Default();
+                    VkPhysicalDeviceProperties2 props2 = VkPhysicalDeviceProperties2.calloc(stack)
+                            .sType$Default()
+                            .pNext(rtProps);
+                    vkGetPhysicalDeviceProperties2(context.device.getPhysicalDevice(), props2);
+                    groupBaseAlignment = rtProps.shaderGroupBaseAlignment();
+                    handleSize = rtProps.shaderGroupHandleSize();
+                    handleSizeAligned = alignUp(handleSize, rtProps.shaderGroupHandleAlignment());
+                }
+
+                // Guard against zero handle size (should never happen on a real RT-capable GPU)
+                if (handleSize == 0) {
+                    throw new IllegalStateException("Shader group handle size is 0 - ray tracing not supported?");
+                }
+
                 int totalGroups = groupsArr.capacity();
 
                 long rgenBase = 0;
@@ -169,7 +189,7 @@ public class RaytracePipelineBuilder {
                         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                 VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR,
-                        VK_MEMORY_HEAP_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                         0, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
                 long ptr = sbtMap.map();
 

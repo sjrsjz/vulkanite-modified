@@ -152,7 +152,7 @@ public class VInitializer {
         int[] res = new int[1];
         _CHECK_(vkEnumeratePhysicalDevices(instance, res, null));
         // Allocate on heap to avoid stack overflow
-        PointerBuffer devices = PointerBuffer.calloc(res[0]);
+        PointerBuffer devices = org.lwjgl.system.MemoryUtil.memCallocPointer(res[0]);
         try {
             _CHECK_(vkEnumeratePhysicalDevices(instance, res, devices));
             if (res[0] != devices.capacity())
@@ -164,7 +164,7 @@ public class VInitializer {
             stackBuffer.rewind();
             return stackBuffer;
         } finally {
-            devices.free();
+            org.lwjgl.system.MemoryUtil.memFree(devices);
         }
     }
 

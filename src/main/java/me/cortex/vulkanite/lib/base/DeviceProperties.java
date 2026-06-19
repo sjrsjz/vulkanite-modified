@@ -22,8 +22,9 @@ public class DeviceProperties {
     }
     
     public void cleanup() {
-        if (rtPipelineProperties != null) {
-            rtPipelineProperties.free();
-        }
+        // rtPipelineProperties is valid for the lifetime of the physical device
+        // (i.e., the entire application session). Do NOT free it here — the VContext
+        // persists across world loads and the cached properties are re-read each time
+        // Iris creates a new pipeline after world re-entry.
     }
 }

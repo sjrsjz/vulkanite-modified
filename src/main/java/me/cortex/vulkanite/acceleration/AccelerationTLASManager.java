@@ -233,9 +233,8 @@ public class AccelerationTLASManager {
         }
         
         public void cleanup() {
-            if (instances != null) {
-                instances.free();
-            }
+            // instances buffer persists across world loads — do NOT free here.
+            // It is accessed by setGeometryUpdateMemory even after cleanup/re-init.
         }
 
 
@@ -243,11 +242,14 @@ public class AccelerationTLASManager {
         //TODO: make the instances buffer, gpu permenent then stream updates instead of uploading per frame
         public void setGeometryUpdateMemory(VCmdBuff cmd, VFence fence, VkAccelerationStructureGeometryKHR struct) {
             long size = (long) VkAccelerationStructureInstanceKHR.SIZEOF * count;
+            if (size == 0) {
+                return;
+            }
             VBuffer data = context.memory.createBuffer(size,
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT
                             | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
                             | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                    VK_MEMORY_HEAP_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
                     0, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
             long ptr = data.map();
             MemoryUtil.memCopy(this.instances.address(0), ptr, size);

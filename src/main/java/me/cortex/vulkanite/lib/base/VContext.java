@@ -8,6 +8,7 @@ import org.lwjgl.vulkan.VkDevice;
 public class VContext {
     public final VkDevice device;
 
+    public volatile boolean deviceLost = false;
 
     public final MemoryManager memory;
     public final SyncManager sync;
@@ -20,7 +21,7 @@ public class VContext {
         cmd = new CommandManager(device, queueCount);
         properties = new DeviceProperties(device);
     }
-    
+
     public void cleanup() {
         properties.cleanup();
     }

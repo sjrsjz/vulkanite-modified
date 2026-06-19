@@ -1,6 +1,7 @@
 package me.cortex.vulkanite.lib.memory;
 
 import me.cortex.vulkanite.lib.base.TrackedResourceObject;
+import me.cortex.vulkanite.lib.other.VUtil;
 
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -147,15 +148,25 @@ public class VmaAllocator {
             LongBuffer pb = stack.mallocLong(1);
             PointerBuffer pa = stack.mallocPointer(1);
             VmaAllocationInfo vai = VmaAllocationInfo.calloc();
-            _CHECK_(
-                    vmaCreateBufferWithAlignment(allocator,
-                            bufferCreateInfo,
-                            allocationCreateInfo.pool(pool),
-                            alignment,
-                            pb,
-                            pa,
-                            vai),
-                    "Failed to allocate buffer");
+            int result = vmaCreateBufferWithAlignment(allocator,
+                    bufferCreateInfo,
+                    allocationCreateInfo.pool(pool),
+                    alignment,
+                    pb,
+                    pa,
+                    vai);
+            if (result != VK_SUCCESS) {
+                long bufSize = bufferCreateInfo.size();
+                int bufUsage = bufferCreateInfo.usage();
+                int memFlags = allocationCreateInfo.flags();
+                int reqFlags = allocationCreateInfo.requiredFlags();
+                throw new AssertionError("Failed to allocate buffer (result=" + result
+                        + ", size=" + bufSize
+                        + ", usage=0x" + Integer.toHexString(bufUsage)
+                        + ", memFlags=0x" + Integer.toHexString(memFlags)
+                        + ", reqFlags=0x" + Integer.toHexString(reqFlags)
+                        + "): " + VUtil.translateVulkanResult(result));
+            }
             return new BufferAllocation(pb.get(0), pa.get(0), vai,
                     (bufferCreateInfo.usage() & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0);
         }
