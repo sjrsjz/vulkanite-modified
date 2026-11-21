@@ -1,136 +1,77 @@
-# Vulkanite for 26.2
+# Vulkanite for Minecraft 26.2
 
-[![License](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE)
-[![Minecraft](https://img.shields.io/badge/Minecraft-26.2-brightgreen.svg)](https://minecraft.net)
-[![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://adoptium.net)
-
-A Minecraft mod that brings **hardware-accelerated ray tracing** to Minecraft Java Edition using **OpenGL–Vulkan interop**. This is a community fork originally created by **[mcrcortex](https://github.com/mcrcortex)** and maintained/updated by **[sjrsjz](https://github.com/sjrsjz)**, targeting modern Minecraft versions (26.x), Sodium 0.9, and Iris 1.11.2.
-
-Enables extra passes that shader developers can leverage for real-time ray tracing effects.
-
-> **This version can identify world type** and resolves numerous compatibility, memory, and stability issues from the original upstream.
-
----
-
-## What's New in This Fork
-
-### Platform Upgrade
-- **Minecraft** 1.20.2 → **26.2**
-- **Java** 17 → **25**
-- **Fabric Loom** → 1.18.0-alpha.7
-- **Fabric API** → 0.154.2+26.2 (full bundle)
-- **LWJGL** 3.3.1 → **3.4.1** (BOM-managed)
-
-### Dependency Migrations
-| Component | Original (Upstream) | This Fork |
-|---|---|---|
-| **Sodium** | `mc1.20.2-0.5.3` (`me.jellysquid.mods.sodium`) | `mc26.2-0.9.1-fabric` (`net.caffeinemc.mods.sodium`) |
-| **Iris** | `1.6.9+1.20.2` (`net.coderbot.iris`) | `1.11.2+26.2-fabric` (`net.irisshaders.iris`) |
-| **Fabric Loader** | 0.14.x | 0.19.3 |
-
-### Memory Management Overhaul
-- **Removed incorrect** `VK_MEMORY_HEAP_DEVICE_LOCAL_BIT` usage across all buffer allocations
-- **Dropped superfluous** `VMA_MEMORY_USAGE_AUTO` flags causing incorrect allocation paths
-- **Stack → heap migration**: Moved large Vulkan enumeration `PointerBuffer` allocations from stack to heap via `MemoryUtil.memCallocPointer` / `memFree`, preventing stack overflow crashes
-- **Proper device properties cleanup**: `VkPhysicalDeviceRayTracingPipelinePropertiesKHR` heap-allocated and explicitly freed during context destruction
-- **Improved error diagnostics** in `VmaAllocator`: now captures and reports buffer size, usage flags, memory flags, and translated Vulkan result on allocation failure
-- **Instances buffer leak fix**: `AccelerationTLASManager` preserves the `VkAccelerationStructureInstanceKHR` buffer across cleanup/re-init cycles to prevent premature freeing
-
-### Device Loss Recovery
-- **Graceful degradation**: volatile `deviceLost` flag on `VContext` and `SyncManager` — rendering is skipped when the Vulkan device is lost
-- **Fence error tolerance**: `SyncManager.checkFences` logs and removes fences on error status instead of crashing, enabling recovery from transient GPU errors
-- **Null-safety guards**: All `AccelerationManager` operations (`chunkBuilds`, `sectionRemove`, `updateTick`, `cleanup`) are null-guarded to prevent crashes during context invalidation
-
-### Iris SSBO Vulkan Interop (Complete Rewrite)
-- **`MixinShaderStorageBuffer`** fully rewritten with `@Overwrite` blocks:
-  - Constructor deletes Iris's plain OpenGL buffer immediately and defers buffer creation
-  - `resizeIfRelative`: Dynamically replaces GL buffers with **Vulkan shared buffers** on window resize, keeping the SSBO interop bridge alive across resolution changes
-  - `createStatic`: Creates Vulkan shared buffers for fixed-size SSBOs with optional initial content upload
-  - `destroy`: Safely frees Vulkan resources with synced callbacks
-- Ensures all Iris shader storage buffers are backed by Vulkan-OpenGL shared memory, required for the hybrid rendering pipeline
-
-### Iris 1.11.2 Compatibility
-Rewrote and streamlined the Iris mixin layer to match the new internal architecture:
-
-| New / Rewritten | Removed (no longer applicable) |
-|---|---|
-| `MixinProgramSet` — updated for new `ShaderProperties` / package structure | `MixinNewWorldRenderingPipeline` |
-| `MixinPBRAtlasTexture` — updated for Iris 1.11.2 PBR | `MixinPackRenderTargetDirectives` |
-| `MixinShaderPackSourceNames` — adapted for new Iris | `MixinRenderTarget` |
-| `MixinStandardMacros` — updated for new internal paths | `MixinNativeImageBackedTexture` |
-| `MixinShaderProperties` — new | `MixinGlResource` |
-| `MixinIrisRenderingPipeline` — new | `MixinGlTexture` |
-| `MixinIrisGLDebug` — new | `MixinShaderStorageBufferHolder` |
-
-### Sodium 0.9 Compatibility
-Removed the fine-grained GL-level mixins that are no longer viable in Sodium 0.9's architecture:
-
-| Removed Mixins (GL-interception layer) |
-|---|
-| `MixinCommandList` |
-| `MixinGLRenderDevice` |
-| `MixinGlBufferArena` |
-| `MixinMutableBuffer` |
-| `MixinRenderRegionManager` |
-| `MixinRenderSectionManager` |
-| `PendingSectionUploadAccessor` |
-| `MixinSpriteAtlasTexture` (Minecraft) |
-
-Retained and updated the chunk-build pipeline mixins (`MixinChunkBuildResult`, `MixinChunkRenderRebuildTask`, `VertexFormatAccessor`) for the new Sodium 0.9 chunk build flow.
-
-### Ray Tracing Pipeline Enhancements
-- **Configurable dispatch dimensions**: `RaytracingShaderSource` now supports `[dispatchW, dispatchH, dispatchD]` — values > 1 are fixed pixel counts, values in (0, 1] are screen-relative multipliers
-- **Execution groups**: Passes in the same group run without barriers; a pipeline barrier is inserted between different groups for fine-grained synchronization control
-- **VulkanPipeline full rewrite**: Modernized with SLF4J logging, device-loss guards, proper error diagnostics, and cleaner resource lifecycle management
-- **GL error tracking**: `MemoryManager` now flushes and checks GL errors before/after `glDeleteMemoryObjectsEXT` to diagnose OpenGL error 1282 sources
-- **Fallback image**: `placeholderImage` renamed to `fallbackImage` with clearer semantics
-
-### Geometry Data Pipeline: Iris XHFP Support
-`SodiumResultAdapter` was **completely rewritten** to decode Iris 1.11.2's XHFP (eXtended Half-Float Precision) vertex format:
-
-- **20-bit packed positions** (up from 16-bit) — properly decoded via `decodePosition20`
-- **Block ID extraction**: Decodes Iris 1.11.2 packed `blockId` at offset 20 (R32_UINT)
-- **Mid-texture coordinates**: RG16_UINT decode at offset 28
-- **Biased texture coordinates**: Handles Iris's ±1 bias encoding at offset 12
-- **Separate BLAS + geometry buffers**: Half-float vertex positions for acceleration structures (8 bytes/vertex) plus a 160-byte Quad struct for the geometry buffer matching `data.glsl` layouts
-
-### Build & CI
-- **GitHub Actions**: Added Gradle build workflow (`.github/workflows/new.yml`)
-- **LWJGL**: Upgraded to BOM-managed 3.4.1, removed platform-specific native hack
-- **Java toolchain**: Set to Java 25 with `--enable-native-access=ALL-UNNAMED`
-- **Proxy support**: Configured for development environments
-
----
+Vulkanite adds hardware ray tracing passes to Iris shaderpacks through OpenGL/Vulkan shared memory. This fork ports [mcrcortex's Vulkanite](https://github.com/mcrcortex/vulkanite) to Minecraft 26.2, maintained by [sjrsjz](https://github.com/sjrsjz).
 
 ## Requirements
-- **Minecraft** 26.2
-- **Fabric Loader** ≥ 0.16.10
-- **Sodium** ≥ 0.9.1
-- **Iris** ≥ 1.11.2
-- **Java** 25+
-- A **Vulkan-capable GPU** with the following Vulkan extensions:
-  - `VK_KHR_ray_tracing_pipeline`
-  - `VK_KHR_acceleration_structure`
-  - `VK_KHR_deferred_host_operations`
-  - `VK_KHR_external_memory` (Win32 or FD)
-  - `VK_KHR_external_semaphore` (Win32 or FD)
-  - `VK_KHR_external_fence` (Win32 or FD)
-  - `VK_EXT_descriptor_indexing`
-  - `VK_KHR_spirv_1_4`
-  - `VK_KHR_shader_draw_parameters`
-  - `VK_KHR_get_memory_requirements_2`
-  - `VK_KHR_get_physical_device_properties_2`
 
-## Building
-```bash
+- Minecraft 26.2, Java 25 or newer, Fabric Loader 0.19.3 or newer
+- Sodium `mc26.2-0.9.1-fabric` and Iris `1.11.2+26.2-fabric` (the versions used for development and testing)
+- A shaderpack with Vulkanite ray tracing passes, such as Dirt RT
+- A GPU/driver exposing Vulkan ray tracing, acceleration structures, descriptor indexing, buffer device addresses, and external memory/semaphores
+- OpenGL external memory/semaphore sharing on the **same physical GPU** as Vulkan
+
+The Windows and Linux sharing paths are supported in code. Native regression tests for this revision were run on Windows with an NVIDIA RTX 4060 Laptop GPU; Linux and other GPU vendors have not been runtime tested.
+
+## Changes in 0.0.7
+
+### Terrain lifetime
+
+Unloading a Sodium render section removes its ray tracing geometry. Work still in the background cannot add that section back. Meshes are published only after Sodium accepts the build result, and accepted empty meshes also remove the previous geometry. Section identity and monotonically increasing versions distinguish stale work from a new section at the same coordinates.
+
+Clearing the world or destroying the shader pipeline invalidates pending terrain builds and clears entity history. An empty scene builds a valid zero-instance TLAS and completes the GL/Vulkan semaphore chain, so the last nonempty scene cannot remain visible.
+
+### Rendering and interop
+
+- Lazy Vulkan initialization: ordinary Iris shaderpacks do not create a Vulkan context.
+- Match the OpenGL and Vulkan devices by UUID and select a compute-capable queue family, with support for devices exposing only one queue.
+- Initialize geometry descriptors before the first frame and respect acceleration-structure scratch and shader-binding-table alignment.
+- Transfer shared image/buffer ownership between OpenGL and Vulkan, preserve compatible image layouts, and wait before reusing per-frame descriptors and uniforms.
+- Initialize static and resized SSBO contents, tolerate unused binding slots, and preserve shared buffers when the window changes size.
+- Support Iris custom texture wrappers, preserve sampler filtering/wrapping, and refresh dynamic texture copies before the GL signal.
+- Convert existing Minecraft textures to shared storage when needed after enabling an RT pack.
+- Encode entity-texture positions as FP16 as expected by Dirt RT; preserve the block-atlas geometry encoding.
+- Reuse entity texture slots across frames without evicting textures referenced in the current frame.
+- Read RT properties after Iris preprocessing, expose `VULKANITE`, and fill missing pass groups without silently merging unrelated passes.
+- Compile large expanded shaders from heap memory rather than overflowing LWJGL's thread stack.
+
+### Cleanup and failure handling
+
+Worker shutdown, rejected meshes, command uploads, shared indices, pipelines, descriptor resources, VMA, device properties, and the Vulkan context now have explicit cleanup paths. Imported Linux file descriptors are owned by OpenGL after a successful import.
+
+Fatal Vulkan submission or fence failures stop new RT work for the session before issuing a GL wait on an unsignaled semaphore. **Automatic Vulkan device recreation is not implemented.** Restart the client after a device loss. Resource leak stack traces are optional with `-Dvulkanite.traceResources=true`.
+
+## Build and verification
+
+Use JDK 25:
+
+```sh
 ./gradlew build
 ```
 
-The compiled mod JAR will be in `build/libs/`.
+The release jar is `build/libs/vulkanite-0.0.7.jar`. The standard build runs GPU-independent regression tests for section lifetime, shader settings, geometry encoding, and entity texture slot reuse.
 
-## Credits
-- **Original author**: [mcrcortex](https://github.com/mcrcortex) — creator of Vulkanite, the first Minecraft mod to bring hardware ray tracing via OpenGL-Vulkan interop
-- **Maintainer**: [sjrsjz](https://github.com/sjrsjz) — 26.2 port, Sodium 0.9 / Iris 1.11.2 compatibility, memory fixes, device loss recovery, SSBO interop rewrite, XHFP geometry pipeline
+On a machine with compatible native GL/Vulkan drivers, run the opt-in GPU test:
 
-## License
-This project is based on the original Vulkanite by mcrcortex. See [LICENSE](LICENSE) for details.
+```sh
+./gradlew interopTest -Pshaderpack="/path/to/Dirt RT"
+```
+
+This traces actual rays through loaded, unloaded, empty, and replacement terrain sections, tests entity and empty-scene TLAS behavior, and verifies the result through both Vulkan readback and an OpenGL GPU consumer. The optional shaderpack argument also compiles all of its ray tracing stages. Set `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` to enable an installed Vulkan validation layer.
+
+The isolated live-client test creates a temporary world under `build/smoke-client`, copies only the supplied pack's `shaders/` directory, and tests teleport/unload, resource reload, window resize, and shader disable/re-enable:
+
+```sh
+./gradlew runSmokeClient -PsmokeTest -Pshaderpack="/path/to/Dirt RT"
+```
+
+It uses a hidden test window, writes `build/smoke-client/smoke-result.txt`, and never installs anything into an existing game instance. When reusing an existing asset cache, supply `-PassetsDir="/path/to/assets" -PassetIndex=32 -x downloadAssets`. Test sources are excluded from the release jar.
+
+These checks cover geometry lifetime and pipeline execution. They do not establish complete visual correctness for every shader effect, entity render type, or third-party mod.
+
+## Shaderpack interface
+
+The port retains Iris XHFP terrain decoding and the existing Vulkanite geometry layout. `rayN` passes support two or three dispatch dimensions: values in `(0, 1]` scale with the screen size, while values greater than one specify fixed dispatch sizes. Passes in the same execution group run without an intervening barrier; changing groups inserts a shader memory barrier. Shaderpack authors must group only independent passes together.
+
+## License and credits
+
+Original Vulkanite by mcrcortex; Minecraft 26.2 port by sjrsjz. See [LICENSE.txt](LICENSE.txt) for the license.

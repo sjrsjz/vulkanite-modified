@@ -6,15 +6,14 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
-
-import java.util.ArrayList;
 
 @Mixin(value = StandardMacros.class, remap = false)
 public class MixinStandardMacros {
-    @Inject(method = "createStandardEnvironmentDefines", at = @At(value = "INVOKE", target = "Lnet/irisshaders/iris/gl/shader/StandardMacros;define(Ljava/util/List;Ljava/lang/String;)V", ordinal = 0), locals = LocalCapture.CAPTURE_FAILHARD)
-    private static void injectVulkaniteDefine(CallbackInfoReturnable<Iterable<StringPair>> cir,
-            ArrayList<StringPair> defines) {
-        defines.add(new StringPair("VULKANITE", " "));
+    @Inject(method = "createStandardEnvironmentDefines", at = @At("RETURN"), cancellable = true)
+    private static void injectVulkaniteDefine(CallbackInfoReturnable<com.google.common.collect.ImmutableList<StringPair>> cir) {
+        var defines = new java.util.ArrayList<StringPair>();
+        cir.getReturnValue().forEach(defines::add);
+        defines.add(new StringPair("VULKANITE", "1"));
+        cir.setReturnValue(com.google.common.collect.ImmutableList.copyOf(defines));
     }
 }

@@ -20,7 +20,6 @@ import java.util.function.Function;
 
 import static me.cortex.vulkanite.lib.other.VUtil._CHECK_;
 import static org.lwjgl.system.MemoryStack.stackPush;
-import static org.lwjgl.system.MemoryUtil.memUTF8;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.*;
 
@@ -29,6 +28,7 @@ public class VInitializer {
     private VkPhysicalDevice physicalDevice;
     private VkDevice device;
     private int queueCount;
+    private int queueFamily = -1;
     private Logger LOGGER = LoggerFactory.getLogger("Vulkanite/VInitializer");
 
     public VInitializer(String appName, String engineName, int major, int minor, String[] extensions, String[] layers) {
@@ -36,8 +36,8 @@ public class VInitializer {
             VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
                     .sType$Default()
                     .apiVersion(VK_MAKE_VERSION(major, minor, 0))
-                    .pApplicationName(memUTF8(appName))
-                    .pEngineName(memUTF8(engineName));
+                    .pApplicationName(stack.UTF8(appName))
+                    .pEngineName(stack.UTF8(engineName));
 
             VkInstanceCreateInfo instanceCreateInfo = VkInstanceCreateInfo.calloc(stack)
                     .sType$Default()
@@ -57,26 +57,37 @@ public class VInitializer {
     public void findPhysicalDevice() {
         String glRenderer = GL11C.glGetString(GL11C.GL_RENDERER);
         LOGGER.info("OpenGL Renderer: " + glRenderer);
+        var gl = org.lwjgl.opengl.GL.getCapabilities();
+        if (!gl.GL_EXT_memory_object || !gl.GL_EXT_semaphore
+                || (me.cortex.vulkanite.client.Vulkanite.IS_WINDOWS
+                ? !gl.GL_EXT_memory_object_win32 || !gl.GL_EXT_semaphore_win32
+                : !gl.GL_EXT_memory_object_fd || !gl.GL_EXT_semaphore_fd)) {
+            throw new IllegalStateException("OpenGL external memory/semaphore sharing is unavailable");
+        }
         try (MemoryStack stack = stackPush()) {
             PointerBuffer devices = getPhysicalDevices(stack);
-            VkPhysicalDevice firstDevice = null;
+            var glUuid = stack.malloc(16);
+            int glDeviceCount = GL11C.glGetInteger(org.lwjgl.opengl.EXTMemoryObject.GL_NUM_DEVICE_UUIDS_EXT);
             for (int i = 0; i < devices.capacity(); i++) {
+                var candidate = new VkPhysicalDevice(devices.get(i), instance);
                 VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.calloc(stack);
-                vkGetPhysicalDeviceProperties(new VkPhysicalDevice(devices.get(i), instance), props);
+                vkGetPhysicalDeviceProperties(candidate, props);
                 String deviceName = props.deviceNameString();
                 LOGGER.info("Vulkan Device " + i + ": " + deviceName);
-                if (firstDevice == null)
-                    firstDevice = new VkPhysicalDevice(devices.get(i), instance);
-                // Match Vulkan device to OpenGL renderer
-                if (glRenderer != null && deviceName != null && glRenderer.contains(deviceName.split("/")[0].trim())) {
-                    physicalDevice = new VkPhysicalDevice(devices.get(i), instance);
-                    LOGGER.info("Matched: " + deviceName);
-                    return;
+                var ids = VkPhysicalDeviceIDProperties.calloc(stack).sType$Default();
+                vkGetPhysicalDeviceProperties2(candidate,
+                        VkPhysicalDeviceProperties2.calloc(stack).sType$Default().pNext(ids));
+                for (int g = 0; g < glDeviceCount; g++) {
+                    org.lwjgl.opengl.EXTMemoryObject.glGetUnsignedBytei_vEXT(
+                            org.lwjgl.opengl.EXTMemoryObject.GL_DEVICE_UUID_EXT, g, glUuid);
+                    if (glUuid.equals(ids.deviceUUID())) {
+                        physicalDevice = candidate;
+                        LOGGER.info("Matched OpenGL/Vulkan device UUID: {}", deviceName);
+                        return;
+                    }
                 }
             }
-            // Fallback to first device
-            physicalDevice = firstDevice;
-            LOGGER.info("No match found, using first GPU");
+            throw new IllegalStateException("No Vulkan device matches the OpenGL device UUID (" + glRenderer + ")");
         }
     }
 
@@ -92,11 +103,22 @@ public class VInitializer {
 
         try (MemoryStack stack = stackPush()) {
 
-            queueCount = queuePriorities.length;
+            var count = stack.ints(0);
+            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, count, null);
+            var families = VkQueueFamilyProperties.calloc(count.get(0), stack);
+            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, count, families);
+            for (int i = 0; i < families.capacity(); i++) {
+                if ((families.get(i).queueFlags() & VK_QUEUE_COMPUTE_BIT) != 0 && families.get(i).queueCount() > 0) {
+                    queueFamily = i;
+                    queueCount = Math.min(queuePriorities.length, families.get(i).queueCount());
+                    break;
+                }
+            }
+            if (queueFamily < 0) throw new IllegalStateException("No compute-capable Vulkan queue family");
             var queueCreateInfos = VkDeviceQueueCreateInfo.calloc(1, stack)
                     .sType$Default()
-                    .pQueuePriorities(stack.floats(queuePriorities))
-                    .queueFamilyIndex(0);
+                    .pQueuePriorities(stack.floats(Arrays.copyOf(queuePriorities, queueCount)))
+                    .queueFamilyIndex(queueFamily);
 
             VkDeviceCreateInfo createInfo = VkDeviceCreateInfo.calloc(stack)
                     .sType$Default()
@@ -130,46 +152,6 @@ public class VInitializer {
         }
     }
 
-    private static VkLayerProperties.Buffer getInstanceLayers(MemoryStack stack) {
-        int[] res = new int[1];
-        _CHECK_(vkEnumerateInstanceLayerProperties(res, null));
-        // Allocate on heap to avoid stack overflow
-        VkLayerProperties.Buffer layerProperties = VkLayerProperties.calloc(res[0]);
-        try {
-            _CHECK_(vkEnumerateInstanceLayerProperties(res, layerProperties));
-            if (res[0] != layerProperties.capacity())
-                throw new IllegalStateException();
-            // Copy to stack-allocated buffer
-            VkLayerProperties.Buffer stackBuffer = VkLayerProperties.calloc(res[0], stack);
-            layerProperties.rewind();
-            stackBuffer.put(layerProperties);
-            stackBuffer.rewind();
-            return stackBuffer;
-        } finally {
-            layerProperties.free();
-        }
-    }
-
-    private static VkExtensionProperties.Buffer getInstanceExtensions(MemoryStack stack) {
-        int[] res = new int[1];
-        _CHECK_(vkEnumerateInstanceExtensionProperties((String) null, res, null));
-        // Allocate on heap to avoid stack overflow
-        VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.calloc(res[0]);
-        try {
-            _CHECK_(vkEnumerateInstanceExtensionProperties((String) null, res, extensionProperties));
-            if (res[0] != extensionProperties.capacity())
-                throw new IllegalStateException();
-            // Copy to stack-allocated buffer
-            VkExtensionProperties.Buffer stackBuffer = VkExtensionProperties.calloc(res[0], stack);
-            extensionProperties.rewind();
-            stackBuffer.put(extensionProperties);
-            stackBuffer.rewind();
-            return stackBuffer;
-        } finally {
-            extensionProperties.free();
-        }
-    }
-
     private PointerBuffer getPhysicalDevices(MemoryStack stack) {
         int[] res = new int[1];
         _CHECK_(vkEnumeratePhysicalDevices(instance, res, null));
@@ -192,47 +174,26 @@ public class VInitializer {
 
     private List<String> getDeviceExtensionStrings(VkPhysicalDevice device) {
         List<String> extensions = new ArrayList<>();
-        // Use heap allocation instead of stack to avoid stack overflow on systems with
-        // many extensions
         try (var stack = stackPush()) {
-            var eb = getDeviceExtensionsHeap(stack, device);
-            for (var extension : eb) {
-                extensions.add(extension.extensionNameString());
+            var count = stack.ints(0);
+            _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, count, null));
+            // A desktop driver can expose hundreds of entries (>64 KiB). Never
+            // copy this buffer back onto LWJGL's small thread-local stack.
+            try (var properties = VkExtensionProperties.calloc(count.get(0))) {
+                _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, count, properties));
+                for (var extension : properties) extensions.add(extension.extensionNameString());
             }
         }
         return extensions;
     }
 
-    private VkExtensionProperties.Buffer getDeviceExtensions(MemoryStack stack, long device) {
-        return getDeviceExtensionsHeap(stack, new VkPhysicalDevice(device, instance));
-    }
-
-    private VkExtensionProperties.Buffer getDeviceExtensions(MemoryStack stack, VkPhysicalDevice device) {
-        return getDeviceExtensionsHeap(stack, device);
-    }
-
-    private VkExtensionProperties.Buffer getDeviceExtensionsHeap(MemoryStack stack, VkPhysicalDevice device) {
-        int[] res = new int[1];
-        _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, res, null));
-        // Allocate on heap to avoid stack overflow
-        VkExtensionProperties.Buffer extensionProperties = VkExtensionProperties.calloc(res[0]);
-        try {
-            _CHECK_(vkEnumerateDeviceExtensionProperties(device, (String) null, res, extensionProperties));
-            if (res[0] != extensionProperties.capacity())
-                throw new IllegalStateException();
-            // Copy to stack-allocated buffer if needed by caller's MemoryStack lifecycle
-            VkExtensionProperties.Buffer stackBuffer = VkExtensionProperties.calloc(res[0], stack);
-            extensionProperties.rewind();
-            stackBuffer.put(extensionProperties);
-            stackBuffer.rewind();
-            return stackBuffer;
-        } finally {
-            extensionProperties.free();
-        }
-    }
-
     public VContext createContext() {
         // TODO:FIXME: DONT HARDCODE THE FACT IT HAS DEVICE ADDRESSES
-        return new VContext(device, queueCount, true);
+        return new VContext(device, queueCount, queueFamily, true);
+    }
+
+    public void abort() {
+        if (device != null) vkDestroyDevice(device, null);
+        vkDestroyInstance(instance, null);
     }
 }

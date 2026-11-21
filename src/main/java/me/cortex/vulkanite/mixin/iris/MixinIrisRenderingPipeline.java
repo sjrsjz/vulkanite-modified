@@ -71,7 +71,7 @@ public class MixinIrisRenderingPipeline {
     private boolean rtFirstFrameSkipped = false;
 
     @Unique
-    private VGImage[] getCustomTextures() {
+    private me.cortex.vulkanite.client.rendering.CustomTextureBinding[] getCustomTextures() {
         Object2ObjectMap<String, TextureAccess> texturesBinary = customTextureManager.getIrisCustomTextures();
         Object2ObjectMap<String, TextureAccess> texturesPNGs = customTextureManager
                 .getCustomTextureIdMap(TextureStage.GBUFFERS_AND_SHADOW);
@@ -81,22 +81,20 @@ public class MixinIrisRenderingPipeline {
         entryList.addAll(texturesPNGs.object2ObjectEntrySet());
         entryList.sort(Comparator.comparing(Entry::getKey));
 
-        return entryList.stream()
-                .map(entry -> {
-                    if (!(entry.getValue() instanceof IVGImage image)) {
-                        throw new IllegalStateException("Custom texture is not shareable with Vulkan: "
-                                + entry.getKey() + " (" + entry.getValue().getClass().getName() + ")");
-                    }
-                    return image.getVGImage().orElseThrow(() -> new IllegalStateException(
-                            "Custom texture is not Vulkan-shared: " + entry.getKey()));
-                })
-                .toArray(VGImage[]::new);
+        var bindings = new ArrayList<me.cortex.vulkanite.client.rendering.CustomTextureBinding>();
+        try {
+            for (var entry : entryList) bindings.add(new me.cortex.vulkanite.client.rendering.CustomTextureBinding(ctx, entry.getValue()));
+            return bindings.toArray(me.cortex.vulkanite.client.rendering.CustomTextureBinding[]::new);
+        } catch (RuntimeException | AssertionError e) {
+            bindings.forEach(me.cortex.vulkanite.client.rendering.CustomTextureBinding::free);
+            throw e;
+        }
     }
 
     @Inject(method = "<init>", at = @At("HEAD"))
     private static void vulkanite$selectPipelineMode(ProgramSet set, CallbackInfo ci) {
         var passes = ((IGetRaytracingSource) set).getRaytracingSource();
-        boolean rayTracingPack = passes != null && passes.length > 0;
+        boolean rayTracingPack = Vulkanite.IS_ENABLED && passes != null && passes.length > 0;
         boolean activatingRayTracing = rayTracingPack && !RaytracingPackState.isActive();
         RaytracingPackState.setActive(rayTracingPack);
         if (activatingRayTracing) {
@@ -112,10 +110,10 @@ public class MixinIrisRenderingPipeline {
     @Inject(method = "<init>", at = @At("TAIL"))
     private void injectRTShader(ProgramSet set, CallbackInfo ci) {
         try {
-            ctx = Vulkanite.INSTANCE.getCtx();
             var passes = ((IGetRaytracingSource) set).getRaytracingSource();
-            vulkanite$rayTracingPack = passes != null && passes.length > 0;
-            if (passes != null && passes.length > 0) {
+            vulkanite$rayTracingPack = Vulkanite.IS_ENABLED && passes != null && passes.length > 0;
+            if (vulkanite$rayTracingPack) {
+                ctx = Vulkanite.INSTANCE.getCtx();
                 LOGGER.info("Found {} raytracing shader passes, initializing Vulkan pipeline...", passes.length);
                 rtShaderPasses = new RaytracingShaderSet[passes.length];
                 for (int i = 0; i < passes.length; i++) {
@@ -204,10 +202,16 @@ public class MixinIrisRenderingPipeline {
             buffers = ((ShaderStorageBufferHolderAccessor) shaderStorageBufferHolder).getBuffers();
         }
         var mainTarget = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-        pipeline.renderPostShadows(mainTarget.width, mainTarget.height, camera, buffers);
+        try {
+            pipeline.renderPostShadows(mainTarget.width, mainTarget.height, camera, buffers);
+        } catch (RuntimeException | AssertionError e) {
+            ctx.sync.fail("Vulkan ray tracing failed; disabling new work", e);
+            EntityGeometryCollector.INSTANCE.setRayTracingActive(false);
+            RaytracingPackState.setActive(false);
+        }
     }
 
-    @Inject(method = "destroy", at = @At("TAIL"))
+    @Inject(method = "destroy", at = @At("HEAD"))
     private void onDestroy(CallbackInfo ci) {
         EntityGeometryCollector.INSTANCE.setRayTracingActive(false);
         if (rtShaderPasses != null) {
@@ -223,6 +227,7 @@ public class MixinIrisRenderingPipeline {
         }
         if (vulkanite$rayTracingPack) {
             RaytracingPackState.setActive(false);
+            Vulkanite.INSTANCE.clearWorld();
         }
     }
 }

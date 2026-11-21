@@ -39,6 +39,7 @@ public class ShaderCompiler {
         }
         long options = 0L;
         long result = 0L;
+        ByteBuffer sourceBytes = null;
         try {
             options = shaderc_compile_options_initialize();
             if (options == 0L) {
@@ -49,7 +50,13 @@ public class ShaderCompiler {
             shaderc_compile_options_set_generate_debug_info(options);
             shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
 
-            result = shaderc_compile_into_spv(compiler, source, vulkanStageToShadercKind(vulkanStage), filename, "main", options);
+            // Expanded shader packs can be megabytes long. LWJGL's String overload
+            // encodes the whole source on its small thread-local native stack.
+            sourceBytes = org.lwjgl.system.MemoryUtil.memUTF8(source, false);
+            try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+                result = shaderc_compile_into_spv(compiler, sourceBytes, vulkanStageToShadercKind(vulkanStage),
+                        stack.UTF8(filename), stack.UTF8("main"), options);
+            }
             if (result == 0L) {
                 throw new ShaderCompileException(filename, "shaderc returned no compilation result");
             }
@@ -58,10 +65,11 @@ public class ShaderCompiler {
             }
 
             ByteBuffer code = shaderc_result_get_bytes(result);
-            ByteBuffer copy = ByteBuffer.allocateDirect(code.remaining());
+            ByteBuffer copy = org.lwjgl.system.MemoryUtil.memAlloc(code.remaining());
             copy.put(code).flip();
             return copy;
         } finally {
+            org.lwjgl.system.MemoryUtil.memFree(sourceBytes);
             if (result != 0L) {
                 shaderc_result_release(result);
             }

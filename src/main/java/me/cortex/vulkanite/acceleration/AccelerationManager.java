@@ -20,23 +20,45 @@ public class AccelerationManager {
     // BLAS results queued by background worker thread, drained on render thread in updateTick()
     private final ConcurrentLinkedDeque<AccelerationBlasBuilder.BLASBatchResult> pendingResults = new ConcurrentLinkedDeque<>();
     private EntityGeometryFrame pendingEntityGeometry;
+    private final SectionBuildState<RenderSection> sections = new SectionBuildState<>();
+    private boolean closed;
 
     public AccelerationManager(VContext context, int blasBuildQueue) {
         this.ctx = context;
         this.tlasManager = new AccelerationTLASManager(context, 0);
-        this.blasBuilder = new AccelerationBlasBuilder(context, blasBuildQueue, pendingResults::add);
+        this.blasBuilder = new AccelerationBlasBuilder(context, blasBuildQueue, pendingResults::add,
+                data -> !data.section().isDisposed() && sections.isCurrent(data.section(), data.time()));
     }
 
-    // Called from Sodium worker threads — safe because enqueue() does no Vulkan work
+    // Called only after Sodium accepts a mesh on the render thread.
     public void chunkBuilds(List<ChunkBuildOutput> results) {
-        blasBuilder.enqueue(results);
+        for (var result : results) {
+            if (closed || ctx.sync.isDeviceLost() || result.section.isDisposed()) {
+                ((me.cortex.vulkanite.compat.IAccelerationBuildResult) result).releaseAccelerationGeometry();
+                continue;
+            }
+            long version = sections.accept(result.section);
+            if (((me.cortex.vulkanite.compat.IAccelerationBuildResult) result).getAccelerationGeometryData() == null) {
+                tlasManager.removeSection(result.section);
+            } else {
+                blasBuilder.enqueue(result, version);
+            }
+        }
     }
 
     // Called on render thread — drains BLAS results and updates TLAS data structures
     public void updateTick() {
         while (!pendingResults.isEmpty()) {
             var batch = pendingResults.poll();
-            tlasManager.updateSections(batch.results());
+            for (var result : batch.results()) {
+                var data = result.data();
+                if (!closed && !data.section().isDisposed() && sections.isCurrent(data.section(), data.time())) {
+                    tlasManager.updateSections(List.of(result));
+                } else {
+                    result.structure().free();
+                    data.geometryBuffers().forEach(VBuffer::free);
+                }
+            }
             syncs.add(batch.semaphore());
         }
     }
@@ -60,13 +82,30 @@ public class AccelerationManager {
     }
 
     public void sectionRemove(RenderSection section) {
+        sections.remove(section);
         tlasManager.removeSection(section);
     }
 
+    public void clearWorld() {
+        sections.clear();
+        synchronized (this) {
+            if (pendingEntityGeometry != null) {
+                pendingEntityGeometry.free();
+                pendingEntityGeometry = null;
+            }
+        }
+        tlasManager.clearSections();
+        updateTick();
+    }
+
     public void cleanup() {
+        if (closed) return;
+        closed = true;
+        sections.clear();
         blasBuilder.shutdown();
         ctx.cmd.waitQueueIdle(0);
         ctx.cmd.waitQueueIdle(1);
+        updateTick();
         syncs.forEach(VSemaphore::free);
         syncs.clear();
         synchronized (this) {
@@ -79,6 +118,8 @@ public class AccelerationManager {
     }
 
     public long getGeometrySet() { return tlasManager.getGeometrySet(); }
+    public int getTerrainSectionCount() { return tlasManager.getTerrainSectionCount(); }
+    public java.util.Set<net.minecraft.core.SectionPos> getTerrainSections() { return tlasManager.getTerrainSections(); }
     public VDescriptorSetLayout getGeometryLayout() { return tlasManager.getGeometryLayout(); }
     public VBuffer getEntityMotionBuffer() { return tlasManager.getEntityMotionBuffer(); }
 }

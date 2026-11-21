@@ -13,4 +13,17 @@ public interface IAccelerationBuildResult {
     Map<TerrainRenderPass, NativeBuffer> getGeometryBuffersData();
     ChunkVertexType getVertexFormat();
     void setVertexFormat(ChunkVertexType format);
+
+    default void releaseAccelerationGeometry() {
+        var geometry = getAccelerationGeometryData();
+        if (geometry != null) {
+            geometry.values().forEach(data -> data.data().free());
+            setAccelerationGeometryData(null);
+        }
+        var buffers = getGeometryBuffersData();
+        if (buffers != null) {
+            buffers.values().forEach(NativeBuffer::free);
+            setGeometryBuffersData(null);
+        }
+    }
 }

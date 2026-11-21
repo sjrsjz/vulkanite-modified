@@ -33,26 +33,26 @@ import static org.lwjgl.vulkan.KHRSpirv14.VK_KHR_SPIRV_1_4_EXTENSION_NAME;
 public class Vulkanite {
     public static final boolean IS_WINDOWS = System.getProperty("os.name").toLowerCase().contains("win");
 
-    public static boolean MEMORY_LEAK_TRACING = true;
+    public static boolean MEMORY_LEAK_TRACING = Boolean.getBoolean("vulkanite.traceResources");
 
     public static boolean IS_ENABLED = true;
     public static final Vulkanite INSTANCE = new Vulkanite();
 
-    private final VContext ctx;
+    private VContext ctx;
+    private Throwable initializationFailure;
+    private boolean destroyed;
     private final ArbitarySyncPointCallback fencedCallback = new ArbitarySyncPointCallback();
 
-    private final AccelerationManager accelerationManager;
+    private AccelerationManager accelerationManager;
 
     public Vulkanite() {
-        ctx = createVulkanContext();
-
-        accelerationManager = new AccelerationManager(ctx, 1);
+        // Loading mixins or rendering a normal Iris pack must not create a device.
     }
 
     public void upload(List<ChunkBuildOutput> results) {
-        if (accelerationManager == null)
+        if (!me.cortex.vulkanite.compat.RaytracingPackState.isActive())
             return;
-        accelerationManager.chunkBuilds(results);
+        getAccelerationManager().chunkBuilds(results);
     }
 
     public void sectionRemove(RenderSection section) {
@@ -61,6 +61,7 @@ public class Vulkanite {
     }
 
     public void renderTick() {
+        if (ctx == null || destroyed) return;
         ctx.sync.checkFences();
         if (accelerationManager != null)
             accelerationManager.updateTick();
@@ -71,6 +72,18 @@ public class Vulkanite {
     }
 
     public VContext getCtx() {
+        if (destroyed) throw new IllegalStateException("Vulkanite has been shut down");
+        if (initializationFailure != null) throw new IllegalStateException("Vulkan initialization previously failed", initializationFailure);
+        if (ctx == null) {
+            com.mojang.blaze3d.systems.RenderSystem.assertOnRenderThread();
+            try {
+                ctx = createVulkanContext();
+                accelerationManager = new AccelerationManager(ctx, Math.min(1, ctx.queueCount - 1));
+            } catch (RuntimeException | LinkageError | AssertionError e) {
+                initializationFailure = e;
+                throw e;
+            }
+        }
         return ctx;
     }
 
@@ -79,9 +92,23 @@ public class Vulkanite {
     }
 
     public void destroy() {
+        if (destroyed) return;
+        if (ctx == null) { destroyed = true; return; }
+        net.irisshaders.iris.Iris.getPipelineManager().destroyPipeline();
         if (accelerationManager != null)
             accelerationManager.cleanup();
+        ctx.cmd.waitIdle();
+        ctx.sync.drainCallbacks();
+        fencedCallback.drain();
+        me.cortex.vulkanite.acceleration.SharedQuadVkIndexBuffer.cleanup();
         ctx.cleanup();
+        destroyed = true;
+    }
+
+    public void clearWorld() {
+        if (accelerationManager != null && !destroyed) accelerationManager.clearWorld();
+        me.cortex.vulkanite.client.rendering.entity.EntityTextureRegistry.INSTANCE.clear();
+        me.cortex.vulkanite.client.rendering.entity.EntityGeometryCollector.INSTANCE.resetHistory();
     }
 
     private static VContext createVulkanContext() {
@@ -97,7 +124,8 @@ public class Vulkanite {
                 });
 
         // This copies whatever gpu the opengl context is on
-        init.findPhysicalDevice();// glGetString(GL_RENDERER).split("/")[0]
+        try {
+        init.findPhysicalDevice();
 
         List<String> extensions = new ArrayList<>(List.of(
                 VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
@@ -139,9 +167,14 @@ public class Vulkanite {
                                 .sType$Default()));
 
         return init.createContext();
+        } catch (RuntimeException | AssertionError e) {
+            init.abort();
+            throw e;
+        }
     }
 
     public AccelerationManager getAccelerationManager() {
+        getCtx();
         return accelerationManager;
     }
 

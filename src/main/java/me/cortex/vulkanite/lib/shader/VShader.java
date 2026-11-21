@@ -37,8 +37,8 @@ public class VShader extends TrackedResourceObject {
     }
 
     public static VShader compileLoad(VContext ctx, String filename, String source, int stage) {
+        ByteBuffer code = ShaderCompiler.compileShader(filename, source, stage);
         try (var stack = stackPush()) {
-            ByteBuffer code = ShaderCompiler.compileShader(filename, source, stage);
 
             VkShaderModuleCreateInfo createInfo = VkShaderModuleCreateInfo.calloc(stack)
                     .sType$Default()
@@ -46,6 +46,8 @@ public class VShader extends TrackedResourceObject {
             LongBuffer pShaderModule = stack.mallocLong(1);
             _CHECK_(vkCreateShaderModule(ctx.device, createInfo, null, pShaderModule));
             return new VShader(ctx, pShaderModule.get(0), stage);
+        } finally {
+            org.lwjgl.system.MemoryUtil.memFree(code);
         }
     }
 

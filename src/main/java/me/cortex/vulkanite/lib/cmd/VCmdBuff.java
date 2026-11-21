@@ -44,6 +44,10 @@ public class VCmdBuff extends TrackedResourceObject implements Pointer {
         pool.free(this);
     }
 
+    public void releaseNow() {
+        pool.releaseNow(this);
+    }
+
     public void begin(int flags) {
         try (var stack = stackPush()) {
             vkBeginCommandBuffer(buffer, VkCommandBufferBeginInfo.calloc(stack).sType$Default().flags(flags));
@@ -76,15 +80,18 @@ public class VCmdBuff extends TrackedResourceObject implements Pointer {
             var barrier = VkMemoryBarrier.calloc(1, stack);
             barrier.get(0).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT)
                     .dstAccessMask(VK_ACCESS_MEMORY_READ_BIT);
-            vkCmdPipelineBarrier(this.buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            vkCmdPipelineBarrier(this.buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                     0, barrier, null, null);
         }
     }
 
     public static int dstStageToAccess(int dstStage) {
         switch (dstStage) {
+            case VK_PIPELINE_STAGE_HOST_BIT:
+                return VK_ACCESS_HOST_READ_BIT;
             case VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:
-                return VK_ACCESS_MEMORY_READ_BIT;
+            case VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT:
+                return 0;
             case VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT:
                 return VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
             case VK_PIPELINE_STAGE_VERTEX_INPUT_BIT:
@@ -110,8 +117,11 @@ public class VCmdBuff extends TrackedResourceObject implements Pointer {
 
     public static int srcStageToAccess(int srcStage) {
         switch (srcStage) {
+            case VK_PIPELINE_STAGE_HOST_BIT:
+                return VK_ACCESS_HOST_WRITE_BIT;
             case VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:
-                return VK_ACCESS_MEMORY_WRITE_BIT;
+            case VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT:
+                return 0;
             case VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT:
                 return VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
             case VK_PIPELINE_STAGE_VERTEX_INPUT_BIT:
@@ -136,7 +146,7 @@ public class VCmdBuff extends TrackedResourceObject implements Pointer {
     }
 
     public void encodeBufferBarrier(VBuffer buffer, long offset, long size) {
-        encodeBufferBarrier(buffer, offset, size, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        encodeBufferBarrier(buffer, offset, size, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     }
 
     public void encodeBufferBarrier(VBuffer buffer, long offset, long size, int srcStage, int dstStage) {
@@ -144,6 +154,7 @@ public class VCmdBuff extends TrackedResourceObject implements Pointer {
             var barrier = VkBufferMemoryBarrier.calloc(1, stack);
             barrier.get(0).sType$Default().srcAccessMask(srcStageToAccess(srcStage))
                     .dstAccessMask(dstStageToAccess(dstStage)).buffer(buffer.buffer())
+                    .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .offset(offset).size(size);
             vkCmdPipelineBarrier(this.buffer, srcStage, dstStage,
                     0, null, barrier, null);

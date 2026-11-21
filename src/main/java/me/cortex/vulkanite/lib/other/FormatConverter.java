@@ -26,6 +26,30 @@ public class FormatConverter {
             case GL_RGBA, GL_RGB8, GL_RGBA8 -> VK_FORMAT_R8G8B8A8_UNORM;
             case GL_RG8 -> VK_FORMAT_R8G8_UNORM;
             case GL_R8 -> VK_FORMAT_R8_UNORM;
+            case GL_R8I -> VK_FORMAT_R8_SINT;
+            case GL_R8UI -> VK_FORMAT_R8_UINT;
+            case GL_RG8I -> VK_FORMAT_R8G8_SINT;
+            case GL_RG8UI -> VK_FORMAT_R8G8_UINT;
+            case GL_RGB8I, GL_RGBA8I -> VK_FORMAT_R8G8B8A8_SINT;
+            case GL_RGB8UI, GL_RGBA8UI -> VK_FORMAT_R8G8B8A8_UINT;
+            case GL_R16I -> VK_FORMAT_R16_SINT;
+            case GL_R16UI -> VK_FORMAT_R16_UINT;
+            case GL_RG16I -> VK_FORMAT_R16G16_SINT;
+            case GL_RG16UI -> VK_FORMAT_R16G16_UINT;
+            case GL_RGB16I, GL_RGBA16I -> VK_FORMAT_R16G16B16A16_SINT;
+            case GL_RGB16UI, GL_RGBA16UI -> VK_FORMAT_R16G16B16A16_UINT;
+            case GL_R32I -> VK_FORMAT_R32_SINT;
+            case GL_R32UI -> VK_FORMAT_R32_UINT;
+            case GL_RG32I -> VK_FORMAT_R32G32_SINT;
+            case GL_RG32UI -> VK_FORMAT_R32G32_UINT;
+            case GL_RGB32I, GL_RGBA32I -> VK_FORMAT_R32G32B32A32_SINT;
+            case GL_RGB32UI, GL_RGBA32UI -> VK_FORMAT_R32G32B32A32_UINT;
+            case org.lwjgl.opengl.GL31C.GL_R8_SNORM -> VK_FORMAT_R8_SNORM;
+            case org.lwjgl.opengl.GL31C.GL_RG8_SNORM -> VK_FORMAT_R8G8_SNORM;
+            case org.lwjgl.opengl.GL31C.GL_RGB8_SNORM, org.lwjgl.opengl.GL31C.GL_RGBA8_SNORM -> VK_FORMAT_R8G8B8A8_SNORM;
+            case org.lwjgl.opengl.GL31C.GL_R16_SNORM -> VK_FORMAT_R16_SNORM;
+            case org.lwjgl.opengl.GL31C.GL_RG16_SNORM -> VK_FORMAT_R16G16_SNORM;
+            case org.lwjgl.opengl.GL31C.GL_RGB16_SNORM, org.lwjgl.opengl.GL31C.GL_RGBA16_SNORM -> VK_FORMAT_R16G16B16A16_SNORM;
 
             default -> {
                 throw new IllegalArgumentException("No known conversion to VK type for GL type " + format + " ("
@@ -45,6 +69,14 @@ public class FormatConverter {
             case GL_RGB16 -> GL_RGBA16;
             case GL_RGB16F -> GL_RGBA16F;
             case GL_RGB32F -> GL_RGBA32F;
+            case GL_RGB8I -> GL_RGBA8I;
+            case GL_RGB8UI -> GL_RGBA8UI;
+            case GL_RGB16I -> GL_RGBA16I;
+            case GL_RGB16UI -> GL_RGBA16UI;
+            case GL_RGB32I -> GL_RGBA32I;
+            case GL_RGB32UI -> GL_RGBA32UI;
+            case org.lwjgl.opengl.GL31C.GL_RGB8_SNORM -> org.lwjgl.opengl.GL31C.GL_RGBA8_SNORM;
+            case org.lwjgl.opengl.GL31C.GL_RGB16_SNORM -> org.lwjgl.opengl.GL31C.GL_RGBA16_SNORM;
             default -> format.getGlFormat();
         };
     }

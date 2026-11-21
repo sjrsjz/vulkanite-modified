@@ -57,6 +57,7 @@ public class VRaytracePipeline extends TrackedResourceObject {
     public void free() {
         free0();
         vkDestroyPipeline(context.device, pipeline, null);
+        vkDestroyPipelineLayout(context.device, layout, null);
         shader_binding_table.free();
         gen.free();
         miss.free();

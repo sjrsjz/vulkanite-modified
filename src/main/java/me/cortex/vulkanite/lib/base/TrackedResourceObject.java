@@ -32,10 +32,10 @@ public abstract class TrackedResourceObject {
 
     public static Ref register(Object obj) {
         String clazz = obj.getClass().getName();
-        Throwable trace = new Throwable();
+        Throwable trace = me.cortex.vulkanite.client.Vulkanite.MEMORY_LEAK_TRACING ? new Throwable() : null;
         boolean[] freed = new boolean[1];
         var clean = cleaner.register(obj, () -> {
-            if (!freed[0]) {
+            if (!freed[0] && trace != null) {
                 LOGGER.warn("Object named: " + clazz + " was not freed, location at: ");
                 trace.printStackTrace();
             }

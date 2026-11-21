@@ -111,6 +111,8 @@ public class RaytracePipelineBuilder {
                     ;
                 });
 
+                callGroups.forEach(shader -> groupsArr.get()
+                        .type(VK_SHADER_GROUP_SHADER_GENERAL_KHR).generalShader(shader2id.get(shader)));
                 groupsArr.rewind();
             }
 
@@ -190,7 +192,7 @@ public class RaytracePipelineBuilder {
                                 VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                        0, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+                        groupBaseAlignment, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
                 long ptr = sbtMap.map();
 
                 // Groups in order of RayGen, Miss Groups, Hit Groups, and callable

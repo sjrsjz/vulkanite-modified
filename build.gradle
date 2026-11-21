@@ -22,6 +22,7 @@ repositories {
 }
 
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
     // To change the versions see the gradle.properties file
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
@@ -34,6 +35,77 @@ dependencies {
     runtimeOnly 'org.anarres:jcpp:1.4.14'
     runtimeOnly 'io.github.douira:glsl-transformer:2.0.0-pre13'
     runtimeOnly 'net.java.dev.jna:jna:5.9.0'
+}
+
+tasks.register('interopTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs native OpenGL/Vulkan tests on an RT-capable GPU; optionally compiles -Pshaderpack=...'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'me.cortex.vulkanite.InteropSmokeTest'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    workingDir layout.buildDirectory.dir('interop-test').get().asFile
+    doFirst { workingDir.mkdirs() }
+    if (providers.gradleProperty('shaderpack').isPresent()) args providers.gradleProperty('shaderpack').get()
+}
+
+// Opt-in, isolated end-to-end test mod. It is never included in the release jar.
+if (providers.gradleProperty('smokeTest').isPresent()) {
+    sourceSets {
+        smoke {
+            compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+            runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+        }
+    }
+    loom {
+        mods {
+            vulkanite { sourceSet sourceSets.main }
+            vulkanite_smoke { sourceSet sourceSets.smoke }
+        }
+        runs {
+            smokeClient {
+                inherit client
+                source sourceSets.smoke
+                runDir 'build/smoke-client'
+                vmArgs '--enable-native-access=ALL-UNNAMED', '-Dmixin.debug.verify=true'
+                programArgs '--width', '640', '--height', '360', '--username', 'VulkaniteSmoke'
+            }
+        }
+    }
+    tasks.register('prepareSmokeClient') {
+        doLast {
+            def testDir = layout.buildDirectory.dir('smoke-client').get().asFile
+            new File(testDir, 'config').mkdirs()
+            new File(testDir, 'config/iris.properties').text = 'enableShaders=true\nshaderPack=Dirt RT\nenableDebugOptions=true\n'
+            new File(testDir, 'options.txt').text = 'renderDistance:4\nsimulationDistance:5\nmaxFps:120\nenableVsync:false\npauseOnLostFocus:false\n'
+            if (providers.gradleProperty('shaderpack').isPresent()) {
+                copy {
+                    from(providers.gradleProperty('shaderpack').get()) { include 'shaders/**' }
+                    into new File(testDir, 'shaderpacks/Dirt RT')
+                }
+            }
+        }
+    }
+    tasks.named('runSmokeClient') {
+        dependsOn 'prepareSmokeClient'
+        doFirst {
+            def lines = file('.gradle/loom-cache/launch.cfg').readLines()
+            if (providers.gradleProperty('assetsDir').isPresent()) {
+                for (int i = 0; i < lines.size() - 1; i++) {
+                    if (lines[i].trim() == '--assetsDir') lines[i + 1] = '\t' + providers.gradleProperty('assetsDir').get()
+                    if (lines[i].trim() == '--assetIndex' && providers.gradleProperty('assetIndex').isPresent()) {
+                        lines[i + 1] = '\t' + providers.gradleProperty('assetIndex').get()
+                    }
+                }
+            }
+            def config = layout.buildDirectory.file('smoke-client/launch.cfg').get().asFile
+            config.text = lines.join('\n') + '\n'
+            jvmArguments.set(jvmArguments.get().collect { arg ->
+                arg.startsWith('-Dfabric.dli.config=') ? '-Dfabric.dli.config=' + config.absolutePath : arg
+            })
+        }
+    }
 }
 
 processResources {
@@ -58,8 +130,8 @@ java {
 }
 
 jar {
-    from("LICENSE") {
-        rename { "${it}_${project.archivesBaseName}" }
+    from("LICENSE.txt") {
+        rename { "${it}_${project.archives_base_name}" }
     }
 }
 

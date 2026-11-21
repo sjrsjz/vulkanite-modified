@@ -79,6 +79,7 @@ public final class EntityGeometryCollector {
     }
 
     public void beginFrame(Vec3 cameraPosition, Matrix4fc viewRotationMatrix, Matrix4fc handViewTransform) {
+        EntityTextureRegistry.INSTANCE.beginFrame();
         vertices.clear();
         currentSnapshots.clear();
         submissionOccurrences.clear();
@@ -123,16 +124,20 @@ public final class EntityGeometryCollector {
     public void setRayTracingActive(boolean active) {
         rayTracingActive = active;
         if (!active) {
-            vertices.clear();
-            previousSnapshots.clear();
-            currentSnapshots.clear();
-            submissionOccurrences.clear();
-            entitySubmissionOwners.clear();
-            handSubmissions.clear();
-            pendingHandSubmissions.clear();
-            frameOpen = false;
-            handFrameOpen = false;
+            resetHistory();
         }
+    }
+
+    public void resetHistory() {
+        vertices.clear();
+        previousSnapshots.clear();
+        currentSnapshots.clear();
+        submissionOccurrences.clear();
+        entitySubmissionOwners.clear();
+        handSubmissions.clear();
+        pendingHandSubmissions.clear();
+        frameOpen = false;
+        handFrameOpen = false;
     }
 
     public boolean isFrameOpen() {
@@ -396,6 +401,7 @@ public final class EntityGeometryCollector {
         for (RawSubmission raw : pendingHandSubmissions) {
             List<CapturedVertex> transformed = new ArrayList<>(raw.vertices.size());
             for (CapturedVertex source : raw.vertices) {
+                EntityTextureRegistry.INSTANCE.markUsed(source.textureIndex);
                 CapturedVertex vertex = source.copy();
                 Vector3f position = handToWorld.transformPosition(
                         new Vector3f(source.x, source.y, source.z));
@@ -594,9 +600,11 @@ public final class EntityGeometryCollector {
             blas.putShort(blasOffset + 6, (short) 0);
 
             int offset = (quadIndex * 4 + i) * GEOMETRY_VERTEX_SIZE;
-            geom.putShort(offset, encodeGeometryPosition(vertex.x));
-            geom.putShort(offset + 2, encodeGeometryPosition(vertex.y));
-            geom.putShort(offset + 4, encodeGeometryPosition(vertex.z));
+            boolean blockAtlas = vertex.textureIndex == BLOCK_ATLAS_TEXTURE;
+            // Dirt RT decodes entity-texture positions as fp16, terrain-atlas positions as fixed point.
+            geom.putShort(offset, me.cortex.vulkanite.compat.GeometryEncoding.entityPosition(vertex.x, blockAtlas));
+            geom.putShort(offset + 2, me.cortex.vulkanite.compat.GeometryEncoding.entityPosition(vertex.y, blockAtlas));
+            geom.putShort(offset + 4, me.cortex.vulkanite.compat.GeometryEncoding.entityPosition(vertex.z, blockAtlas));
             geom.put(offset + 6, (byte) 0);
             geom.put(offset + 7, (byte) 0);
             geom.put(offset + 8, (byte) vertex.r);
@@ -617,7 +625,6 @@ public final class EntityGeometryCollector {
             geom.put(offset + 29, snorm8(vertex.ny));
             geom.put(offset + 30, snorm8(vertex.nz));
             geom.put(offset + 31, (byte) 0);
-            boolean blockAtlas = vertex.textureIndex == BLOCK_ATLAS_TEXTURE;
             geom.putShort(offset + 32, (short) (blockAtlas ? -1 : -2));
             geom.putShort(offset + 34, (short) (blockAtlas ? 0 : vertex.textureIndex + 1));
             geom.putInt(offset + 36, 0);

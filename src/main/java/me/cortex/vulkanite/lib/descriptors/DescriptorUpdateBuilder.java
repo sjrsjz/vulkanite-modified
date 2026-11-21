@@ -137,7 +137,7 @@ public class DescriptorUpdateBuilder {
     }
 
     public DescriptorUpdateBuilder imageSampler(int binding, VImageView view, VSampler sampler) {
-        return imageSampler(binding, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, view, sampler);
+        return imageSampler(binding, VK_IMAGE_LAYOUT_GENERAL, view, sampler);
     }
 
     public DescriptorUpdateBuilder imageSampler(int binding, int layout, VImageView view, VSampler sampler) {

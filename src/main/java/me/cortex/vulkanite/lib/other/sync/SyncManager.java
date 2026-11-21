@@ -50,6 +50,27 @@ public class SyncManager {
         return deviceLost;
     }
 
+    public void fail(String message, Throwable cause) {
+        if (!deviceLost) LOGGER.error(message, cause);
+        deviceLost = true;
+    }
+
+    public void checkResult(int result, String operation) {
+        if (result != VK_SUCCESS) {
+            var error = new IllegalStateException(operation + ": " + VUtil.translateVulkanResult(result));
+            fail(operation + " failed; Vulkan rendering is disabled for this session", error);
+            throw error;
+        }
+    }
+
+    public void waitForFence(VFence fence) {
+        int result;
+        do {
+            result = vkWaitForFences(device, fence.address(), true, 1_000_000_000L);
+        } while (result == VK_TIMEOUT);
+        checkResult(result, "vkWaitForFences");
+    }
+
     public VFence createFence() {
         try (var stack = stackPush()) {
             LongBuffer res = stack.callocLong(1);
@@ -125,10 +146,9 @@ public class SyncManager {
                             .handleType(EXTERNAL_SEMAPHORE_TYPE),
                     fd));
 
-            if (fd.get(0)== 0) {
+            if (fd.get(0) < 0) {
                 throw new IllegalStateException();
             }
-            HandleDescriptorManger.add(fd.get(0));
 
             int glSemaphore = glGenSemaphoresEXT();
             glImportSemaphoreFdEXT(glSemaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd.get(0));
@@ -137,7 +157,9 @@ public class SyncManager {
             if (glGetError() != GL_NO_ERROR)
                 throw new IllegalStateException();
 
-            return new VGSemaphore(device, semaphore, glSemaphore, fd.get(0));
+            // A successful GL import consumes the FD. Only Win32 handles need an
+            // application-side close when the shared semaphore is destroyed.
+            return new VGSemaphore(device, semaphore, glSemaphore, -1);
         }
     }
 
@@ -167,18 +189,19 @@ public class SyncManager {
 
     //TODO: optimize this
     public void checkFences() {
+        List<Runnable> ready = new LinkedList<>();
         synchronized (callbacks) {
             List<VFence> toRemove = new LinkedList<>();
             for (var cb : callbacks.entrySet()) {
                 int status = vkGetFenceStatus(device, cb.getKey().address());
                 if (status == VK_SUCCESS) {
-                    cb.getValue().forEach(Runnable::run);
+                    ready.addAll(cb.getValue());
                     toRemove.add(cb.getKey());
                 } else if (status == VK_NOT_READY) {
                     continue;
                 } else {
-                    // Device lost or other error: log and remove the fence without
-                    // running the callback, since resources may be in an invalid state
+                    // Stop new work on every fatal result. Keep cleanup callbacks
+                    // until shutdown has waited for both queues.
                     if (status == VK_ERROR_DEVICE_LOST) {
                         // Only log the stack trace once - deviceLost is sticky and every
                         // remaining fence would otherwise re-print it on every render tick
@@ -188,12 +211,23 @@ public class SyncManager {
                         }
                         deviceLost = true;
                     }
-                    LOGGER.warn("vkGetFenceStatus returned {} ({}), removing fence without callback",
+                    LOGGER.warn("vkGetFenceStatus returned {} ({}), retaining cleanup until shutdown",
                             status, VUtil.translateVulkanResult(status));
-                    toRemove.add(cb.getKey());
+                    deviceLost = true;
                 }
             }
             toRemove.forEach(callbacks::remove);
         }
+        ready.forEach(Runnable::run);
+    }
+
+    /** Called only after vkDeviceWaitIdle (including device loss) during shutdown. */
+    public void drainCallbacks() {
+        List<Runnable> ready = new LinkedList<>();
+        synchronized (callbacks) {
+            callbacks.values().forEach(ready::addAll);
+            callbacks.clear();
+        }
+        ready.forEach(Runnable::run);
     }
 }

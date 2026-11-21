@@ -31,6 +31,7 @@ public class VAccelerationStructure extends TrackedResourceObject {
     }
 
     public void free() {
+        if (isFreed()) return;
         free0();
         vkDestroyAccelerationStructureKHR(device, structure, null);
         buffer.free();

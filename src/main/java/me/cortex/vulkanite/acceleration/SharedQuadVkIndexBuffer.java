@@ -1,10 +1,8 @@
 package me.cortex.vulkanite.acceleration;
 
 import me.cortex.vulkanite.lib.base.VContext;
-import me.cortex.vulkanite.lib.cmd.VCmdBuff;
 import me.cortex.vulkanite.lib.memory.VBuffer;
 import org.lwjgl.system.MemoryUtil;
-import org.lwjgl.vulkan.VkDeviceOrHostAddressConstKHR;
 
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
@@ -16,37 +14,51 @@ import static org.lwjgl.vulkan.VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 public class SharedQuadVkIndexBuffer {
     public static final int TYPE = VK_INDEX_TYPE_UINT32;
     private static VBuffer indexBuffer = null;
-    private static VkDeviceOrHostAddressConstKHR indexBufferAddr = null;
     private static int currentQuadCount = 0;
+    private static final java.util.List<VBuffer> retiredBuffers = new java.util.ArrayList<>();
 
-    public synchronized static VkDeviceOrHostAddressConstKHR getIndexBuffer(VContext context, VCmdBuff uploaCmdBuff, int quadCount) {
+    public synchronized static long getAddress(VContext context, int quadCount) {
         if (currentQuadCount < quadCount) {
-            makeNewIndexBuffer(context, uploaCmdBuff, quadCount);
+            makeNewIndexBuffer(context, quadCount);
         }
 
-        return indexBufferAddr;
+        return indexBuffer.deviceAddress();
     }
 
-    private static void makeNewIndexBuffer(VContext context, VCmdBuff uploaCmdBuff, int quadCount) {
+    private static void makeNewIndexBuffer(VContext context, int quadCount) {
         if (indexBuffer != null) {
-            //TODO: need to enqueue the old indexBuffer for memory release
-            indexBufferAddr.free();//Note this is calloced (in global heap) so need to release it IS SEPERATE FROM indexBuffer
-            throw new IllegalStateException();
+            retiredBuffers.add(indexBuffer);
         }
 
         ByteBuffer buffer = genQuadIdxs(quadCount);
         //TODO: dont harcode VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR and VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
         indexBuffer = context.memory.createBuffer(buffer.remaining(),
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT
                         | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
                         | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0,
+                org.lwjgl.util.vma.Vma.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
-        uploaCmdBuff.encodeDataUpload(context.memory, MemoryUtil.memAddress(buffer), indexBuffer, 0,
-                buffer.remaining());
+        try {
+            long address = indexBuffer.map();
+            MemoryUtil.memCopy(MemoryUtil.memAddress(buffer), address, buffer.remaining());
+            indexBuffer.flush();
+            indexBuffer.unmap();
+            // Host writes happen before submissions on either queue; no cross-queue
+            // GPU upload dependency or publication race is needed for this table.
+        } finally {
+            MemoryUtil.memFree(buffer);
+        }
 
-        indexBufferAddr = VkDeviceOrHostAddressConstKHR.calloc().deviceAddress(indexBuffer.deviceAddress());
         currentQuadCount = quadCount;
+    }
+
+    public static synchronized void cleanup() {
+        if (indexBuffer != null) indexBuffer.free();
+        retiredBuffers.forEach(VBuffer::free);
+        retiredBuffers.clear();
+        indexBuffer = null;
+        currentQuadCount = 0;
     }
 
     public static ByteBuffer genQuadIdxs(int quadCount) {

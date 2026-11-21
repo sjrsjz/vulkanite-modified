@@ -17,6 +17,8 @@ public class VComputePipeline extends TrackedResourceObject {
 
     @Override
     public void free() {
-
+        free0();
+        org.lwjgl.vulkan.VK10.vkDestroyPipeline(context.device, pipeline, null);
+        org.lwjgl.vulkan.VK10.vkDestroyPipelineLayout(context.device, layout, null);
     }
 }

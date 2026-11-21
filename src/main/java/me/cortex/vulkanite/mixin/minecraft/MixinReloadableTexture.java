@@ -28,7 +28,7 @@ public abstract class MixinReloadableTexture extends AbstractTexture {
     @Redirect(method = "doLoad", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/GpuDevice;createTexture(Ljava/util/function/Supplier;ILcom/mojang/blaze3d/GpuFormat;IIII)Lcom/mojang/blaze3d/textures/GpuTexture;", remap = false))
     private GpuTexture vulkanite$makeReloadableTextureShared(GpuDevice device, Supplier<String> label, int usage,
             GpuFormat format, int width, int height, int depthOrLayers, int mipLevels) {
-        if (!Vulkanite.IS_ENABLED) {
+        if (!Vulkanite.IS_ENABLED || !me.cortex.vulkanite.compat.RaytracingPackState.isActive()) {
             return device.createTexture(label, usage, format, width, height, depthOrLayers, mipLevels);
         }
 

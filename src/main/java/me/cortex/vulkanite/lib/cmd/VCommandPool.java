@@ -18,6 +18,8 @@ import static org.lwjgl.vulkan.VK10.*;
 public class VCommandPool extends TrackedResourceObject {
     final VkDevice device;
     final long pool;
+    private final java.util.Set<VCmdBuff> allocated = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private boolean closed;
     public VCommandPool(VkDevice device, int flags) {
         this(device, 0, flags);
     }
@@ -44,6 +46,7 @@ public class VCommandPool extends TrackedResourceObject {
     }
 
     public synchronized VCmdBuff[] createCommandBuffers(int count, int level) {
+        if (closed) throw new IllegalStateException("Command pool is closed");
         try (MemoryStack stack = MemoryStack.stackPush()){
             PointerBuffer pCommandBuffer = stack.mallocPointer(count);
             _CHECK_(vkAllocateCommandBuffers(device,
@@ -57,6 +60,7 @@ public class VCommandPool extends TrackedResourceObject {
             VCmdBuff[] buffers = new VCmdBuff[count];
             for (int i = 0; i < count; i++) {
                 buffers[i] = new VCmdBuff(this, new VkCommandBuffer(pCommandBuffer.get(i), device));
+                allocated.add(buffers[i]);
             }
             return buffers;
         }
@@ -64,21 +68,26 @@ public class VCommandPool extends TrackedResourceObject {
 
     private final ConcurrentLinkedDeque<VCmdBuff> toRelease = new ConcurrentLinkedDeque<>();
     void free(VCmdBuff cmdBuff) {
-        toRelease.add(cmdBuff);
+        if (!closed) toRelease.add(cmdBuff);
     }
 
     public void doReleases() {
         while (!toRelease.isEmpty()) {
-            toRelease.poll().freeInternal();
+            releaseNow(toRelease.poll());
         }
     }
 
-    public void releaseNow(VCmdBuff cmd) {
-        cmd.freeInternal();
+    public synchronized void releaseNow(VCmdBuff cmd) {
+        if (allocated.remove(cmd)) cmd.freeInternal();
     }
 
     @Override
-    public void free() {
+    public synchronized void free() {
+        if (closed) return;
+        closed = true;
+        for (var cmd : allocated) cmd.freeInternal();
+        allocated.clear();
+        toRelease.clear();
         free0();
         vkDestroyCommandPool(device, pool, null);
     }

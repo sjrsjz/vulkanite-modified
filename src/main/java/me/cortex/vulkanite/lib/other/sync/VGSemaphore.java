@@ -18,7 +18,7 @@ public class VGSemaphore extends VSemaphore {
 
     @Override
     public void free() {
-        HandleDescriptorManger.close(handleDescriptor);
+        if (handleDescriptor != -1) HandleDescriptorManger.close(handleDescriptor);
         glDeleteSemaphoresEXT(glSemaphore);
         super.free();
     }

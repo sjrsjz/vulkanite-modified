@@ -90,7 +90,7 @@ public class MemoryManager {
                         }
                     }
 
-                    if (nativeHandle == 0)
+                    if (Vulkanite.IS_WINDOWS ? nativeHandle == 0 : nativeHandle < 0)
                         throw new IllegalStateException();
 
                     int staleError = glGetError();
@@ -162,12 +162,6 @@ public class MemoryManager {
                         // error);
                         // throw new IllegalStateException();
                         // }
-                    } else {
-                        int code = 0;
-                        if ((code = LibC.INSTANCE.close((int) tracked.desc.handle)) != 0) {
-                            LOGGER.error("STATE MIGHT BE BROKEN! Failed to close FD: " + code);
-                            throw new IllegalStateException();
-                        }
                     }
                     MEMORY_TO_HANDLES.remove(memory);
                 } else {
@@ -201,6 +195,10 @@ public class MemoryManager {
             if (bufErr != GL_NO_ERROR) {
                 LOGGER.error("createSharedBuffer: glNamedBufferStorageMemEXT produced GL error 0x{} (size={} glId={})",
                         Integer.toHexString(bufErr), size, glId);
+                org.lwjgl.opengl.GL15C.glDeleteBuffers(glId);
+                ExternalMemoryTracker.release(alloc.ai.deviceMemory());
+                alloc.free();
+                throw new IllegalStateException("Shared GL buffer storage failed: 0x" + Integer.toHexString(bufErr));
             }
             return new VGBuffer(alloc, glId);
         }
@@ -299,6 +297,10 @@ public class MemoryManager {
                 LOGGER.error("createSharedImage: GL storage produced error 0x{} ({}x{}x{}, target=0x{}, glId={})",
                         Integer.toHexString(createErr), width, height, depth,
                         Integer.toHexString(glImageType), glId);
+                glDeleteTextures(glId);
+                ExternalMemoryTracker.release(alloc.ai.deviceMemory());
+                alloc.free();
+                throw new IllegalStateException("Shared GL texture storage failed: 0x" + Integer.toHexString(createErr));
             }
             return new VGImage(alloc, width, height, depth, mipLevels, vkFormat, glFormat, glId, dimensions);
         }
@@ -316,7 +318,7 @@ public class MemoryManager {
                     .size(size)
                     .usage(usage),
                     VmaAllocationCreateInfo.calloc(stack)
-                            .requiredFlags(properties),
+                            .requiredFlags(properties).flags(vmaFlags),
                     alignment);
             return new VBuffer(alloc);
         }
@@ -357,5 +359,9 @@ public class MemoryManager {
                     "Failed to create acceleration acceleration structure");
             return new VAccelerationStructure(device, pAccelerationStructure.get(0), buffer);
         }
+    }
+
+    public void cleanup() {
+        allocator.cleanup();
     }
 }

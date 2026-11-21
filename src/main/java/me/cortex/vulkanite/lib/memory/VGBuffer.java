@@ -19,6 +19,7 @@ public class VGBuffer extends VBuffer {
 
     @Override
     public void free() {
+        if (isFreed()) return;
         int errBefore = glGetError();
         if (errBefore != GL_NO_ERROR) {
             LOG.warn("VGBuffer.free: stale GL error 0x{} BEFORE glDeleteBuffers(glId={})",

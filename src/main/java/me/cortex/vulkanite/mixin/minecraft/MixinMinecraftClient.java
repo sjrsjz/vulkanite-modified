@@ -27,7 +27,7 @@ public class MixinMinecraftClient {
         Vulkanite.INSTANCE.fenceTick();
     }
 
-    @Inject(method = "close", at = @At("HEAD"))
+    @Inject(method = "close", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/systems/RenderSystem;shutdownRenderer()V"))
     private void onClose(CallbackInfo ci) {
         LOGGER.info("Minecraft closing — destroying Vulkanite");
         Vulkanite.INSTANCE.destroy();

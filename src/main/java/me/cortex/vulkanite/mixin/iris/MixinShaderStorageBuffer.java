@@ -76,6 +76,7 @@ public abstract class MixinShaderStorageBuffer implements IVGBuffer {
                 finalSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         vkBuffer = Optional.of(buf);
         this.id = buf.glId;
+        vulkanite$clear(finalSize);
         IrisRenderSystem.bindBufferBase(GL43C.GL_SHADER_STORAGE_BUFFER, index, this.id);
         ci.cancel();
     }
@@ -101,10 +102,18 @@ public abstract class MixinShaderStorageBuffer implements IVGBuffer {
         if (content != null) {
             GlStateManager._glBindBuffer(GL43C.GL_SHADER_STORAGE_BUFFER, this.id);
             GlStateManager._glBufferSubData(GL43C.GL_SHADER_STORAGE_BUFFER, 0, content);
+        } else {
+            vulkanite$clear(info.size());
         }
 
         IrisRenderSystem.bindBufferBase(GL43C.GL_SHADER_STORAGE_BUFFER, index, this.id);
         ci.cancel();
+    }
+
+    @Unique
+    private void vulkanite$clear(long size) {
+        org.lwjgl.opengl.GL45C.glClearNamedBufferSubData(id, GL43C.GL_R8, 0, size,
+                GL43C.GL_RED, GL43C.GL_BYTE, (ByteBuffer) null);
     }
 
     @Inject(method = "destroy", at = @At("HEAD"), cancellable = true)

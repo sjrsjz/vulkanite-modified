@@ -3,6 +3,7 @@ package me.cortex.vulkanite.lib.cmd;
 import me.cortex.vulkanite.lib.other.VUtil;
 import me.cortex.vulkanite.lib.other.sync.VFence;
 import me.cortex.vulkanite.lib.other.sync.VSemaphore;
+import me.cortex.vulkanite.lib.other.sync.SyncManager;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkQueue;
@@ -21,14 +22,18 @@ public class CommandManager {
     private final VkDevice device;
     private final VkQueue[] queues;
     private volatile int submitCount;
+    private final int queueFamily;
+    private final SyncManager sync;
 
-    public CommandManager(VkDevice device, int queues) {
+    public CommandManager(VkDevice device, int queues, int queueFamily, SyncManager sync) {
         this.device = device;
+        this.queueFamily = queueFamily;
+        this.sync = sync;
         this.queues = new VkQueue[queues];
         try (var stack = stackPush()) {
             var pQ = stack.pointers(0);
             for (int i = 0; i < queues; i++) {
-                vkGetDeviceQueue(device, 0, i, pQ);
+                vkGetDeviceQueue(device, queueFamily, i, pQ);
                 LOGGER.debug("Queue {} has address {}", i, Long.toHexString(pQ.get(0)));
                 this.queues[i] = new VkQueue(pQ.get(0), device);
             }
@@ -41,12 +46,12 @@ public class CommandManager {
     }
 
     public VCommandPool createPool(int flags) {
-        return new VCommandPool(device, flags);
+        return new VCommandPool(device, queueFamily, flags);
     }
 
     public void submit(int queueId, VkSubmitInfo submit) {
-        try (var stack = stackPush()) {
-            vkQueueSubmit(queues[queueId], submit, 0);
+        synchronized (submitLock) {
+            sync.checkResult(vkQueueSubmit(queues[queueId], submit, 0), "vkQueueSubmit");
         }
     }
 
@@ -57,9 +62,11 @@ public class CommandManager {
                     .pWaitSemaphores(stack.longs())
                     .pWaitDstStageMask(stack.ints())
                     .pSignalSemaphores(stack.longs());
-            vkQueueSubmit(queues[queueId], submit, 0);
-            vkQueueWaitIdle(queues[queueId]);
-            cmdBuff.freeInternal();
+            synchronized (submitLock) {
+                sync.checkResult(vkQueueSubmit(queues[queueId], submit, 0), "vkQueueSubmit");
+                sync.checkResult(vkQueueWaitIdle(queues[queueId]), "vkQueueWaitIdle");
+            }
+            cmdBuff.releaseNow();
         }
     }
 
@@ -82,16 +89,23 @@ public class CommandManager {
                     .waitSemaphoreCount(waits.length)
                     .pWaitDstStageMask(stack.ints(waitStages))
                     .pSignalSemaphores(signalSemaphores);
-            int result = vkQueueSubmit(queues[queueId], submit, fence==null?0:fence.address());
-            if (result != 0) {
-                LOGGER.error("submit#{} queue={} thread={} cmds={} FAILED: {}", id, queueId,
-                        Thread.currentThread().getName(), cmdBuffs.length, VUtil.translateVulkanResult(result));
-            }
+            if (sync.isDeviceLost()) throw new IllegalStateException("Vulkan context has failed");
+            sync.checkResult(vkQueueSubmit(queues[queueId], submit, fence==null?0:fence.address()), "vkQueueSubmit");
         }
         }
     }
 
     public void waitQueueIdle(int queue) {
-        vkQueueWaitIdle(queues[queue]);
+        synchronized (submitLock) {
+            int result = vkQueueWaitIdle(queues[Math.min(queue, queues.length - 1)]);
+            if (result != VK_SUCCESS) sync.fail("vkQueueWaitIdle: " + VUtil.translateVulkanResult(result), null);
+        }
+    }
+
+    public void waitIdle() {
+        synchronized (submitLock) {
+            int result = vkDeviceWaitIdle(device);
+            if (result != VK_SUCCESS) sync.fail("vkDeviceWaitIdle: " + VUtil.translateVulkanResult(result), null);
+        }
     }
 }

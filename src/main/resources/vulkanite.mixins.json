@@ -12,6 +12,7 @@
     "iris.MixinProgramSet",
     "iris.MixinShaderPackSourceNames",
     "iris.MixinShaderProperties",
+    "iris.MixinStandardMacros",
     "minecraft.MixinAbstractTexture",
     "minecraft.MixinBlockEntityRenderDispatcher",
     "minecraft.MixinBlockModelFeatureRenderer",
@@ -35,6 +36,7 @@
     "minecraft.RenderSetupTextureBindingAccessor",
     "minecraft.RenderTypeAccessor",
     "sodium.MixinRenderSection",
+    "sodium.MixinRenderSectionManager",
     "sodium.chunk.MixinChunkBuildResult",
     "sodium.chunk.MixinChunkRenderRebuildTask",
     "sodium.chunk.VertexFormatAccessor"

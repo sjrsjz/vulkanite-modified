@@ -26,6 +26,8 @@ public class SodiumResultAdapter {
 
         Map<TerrainRenderPass, GeometryData> blasMap = new HashMap<>();
         Map<TerrainRenderPass, NativeBuffer> geomBuffersMap = new HashMap<>();
+        ebr.setAccelerationGeometryData(blasMap);
+        ebr.setGeometryBuffersData(geomBuffersMap);
 
         for (var pass : buildResult.meshes.entrySet()) {
             var vertData = pass.getValue().getVertexData();
@@ -36,14 +38,17 @@ public class SodiumResultAdapter {
             if (vertexCount % 4 != 0)
                 throw new IllegalStateException("Non multiple 4 vertex count");
             int quadCount = vertexCount / 4;
+            if (quadCount == 0) continue;
 
             // BLAS vertex data: half-float positions (8 bytes/vertex)
             NativeBuffer blasBuffer = new NativeBuffer(vertexCount * 8);
+            blasMap.put(pass.getKey(), new GeometryData(quadCount, blasBuffer));
             long blasAddr = MemoryUtil.memAddress(blasBuffer.getDirectBuffer());
 
             // Geometry buffer: 40-byte Vertex struct × 4 vertices per Quad (160 bytes/quad)
             // This exactly matches the shaderpack's data.glsl Vertex/Quad layout (old Iris 1.6.9 XHFP format).
             NativeBuffer geomBuffer = new NativeBuffer(quadCount * 40 * 4);
+            geomBuffersMap.put(pass.getKey(), geomBuffer);
             ByteBuffer geomBuf = geomBuffer.getDirectBuffer();
 
             long srcVert = MemoryUtil.memAddress(vertData.getDirectBuffer());

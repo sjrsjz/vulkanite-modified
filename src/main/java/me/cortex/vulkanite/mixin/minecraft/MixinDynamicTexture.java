@@ -43,7 +43,7 @@ public abstract class MixinDynamicTexture extends AbstractTexture {
 
     private GpuTexture createSharedTexture(GpuDevice device, String label, int usage, GpuFormat format,
             int width, int height, int depthOrLayers, int mipLevels, Supplier<GpuTexture> fallback) {
-        if (!Vulkanite.IS_ENABLED || Vulkanite.INSTANCE == null) {
+        if (!Vulkanite.IS_ENABLED || !me.cortex.vulkanite.compat.RaytracingPackState.isActive()) {
             return fallback.get();
         }
 

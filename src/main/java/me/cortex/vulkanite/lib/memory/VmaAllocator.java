@@ -96,6 +96,13 @@ public class VmaAllocator {
         }
     }
 
+    public void cleanup() {
+        vmaDestroyPool(allocator, sharedPool);
+        vmaDestroyPool(allocator, sharedDedicatedPool);
+        vmaDestroyAllocator(allocator);
+        exportMemoryAllocateInfo.free();
+    }
+
     // NOTE: SHOULD ONLY BE USED TO ALLOCATE SHARED MEMORY AND STUFF, not
     // recommended
     SharedBufferAllocation allocShared(VkBufferCreateInfo bufferCreateInfo,

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "vulkanite_smoke",
+  "version": "1",
+  "name": "Vulkanite isolated regression runner",
+  "environment": "client",
+  "entrypoints": {"client": ["me.cortex.vulkanite.smoke.SmokeClient"]},
+  "mixins": ["smoke.mixins.json"],
+  "depends": {"vulkanite": "*", "fabric-api": "*"}
+}

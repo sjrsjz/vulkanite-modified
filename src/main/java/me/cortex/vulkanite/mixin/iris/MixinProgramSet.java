@@ -70,11 +70,11 @@ public abstract class MixinProgramSet implements IGetRaytracingSource {
         }
 
         if (!sourceList.isEmpty()) {
-            Properties props = buildProperties(me.cortex.vulkanite.compat.ShaderPropertiesRaw.RAW);
-            int[] groups = parseGroups(props, sourceList.size());
+            Properties props = ((me.cortex.vulkanite.compat.RaytracingProperties) shaderProperties).getRaytracingProperties();
+            int[] groups = me.cortex.vulkanite.compat.RaytracingSettings.groups(props, sourceList.size());
             for (int i = 0; i < sourceList.size(); i++) {
-                float[] disp = parseDispatch(props, "rt." + i + ".dispatch");
-                int grp = groups != null ? groups[i] : 0;
+                float[] disp = me.cortex.vulkanite.compat.RaytracingSettings.dispatch(props, "rt." + i + ".dispatch");
+                int grp = groups[i];
                 LOGGER.info("RT pass {} dispatch={}x{}x{} group={}", i, disp[0], disp[1], disp[2], grp);
                 sourceList.set(i, new RaytracingShaderSource(
                         sourceList.get(i).name, sourceList.get(i).raygen, sourceList.get(i).raymiss,
@@ -91,43 +91,4 @@ public abstract class MixinProgramSet implements IGetRaytracingSource {
         return sources != null ? sources : EMPTY_SOURCES;
     }
 
-    @Unique
-    private static Properties buildProperties(String raw) {
-        Properties p = new Properties();
-        if (raw != null) {
-            try { p.load(new StringReader(raw)); } catch (IOException ignored) {}
-        }
-        return p;
-    }
-
-    @Unique
-    private static int[] parseGroups(Properties props, int count) {
-        String v = props.getProperty("rt.groups");
-        if (v == null) return null;
-        String[] parts = v.trim().split("\\s+");
-        int[] groups = new int[Math.min(parts.length, count)];
-        for (int i = 0; i < groups.length; i++) {
-            try { groups[i] = Integer.parseInt(parts[i]); } catch (NumberFormatException e) { groups[i] = 0; }
-        }
-        return groups;
-    }
-
-    @Unique
-    private static float[] parseDispatch(Properties props, String key) {
-        float[] def = {1.0f, 1.0f, 1.0f};
-        String v = props.getProperty(key);
-        if (v == null) return def;
-        String[] parts = v.trim().split("\\s+");
-        try {
-            if (parts.length >= 3) {
-                def[0] = Float.parseFloat(parts[0]);
-                def[1] = Float.parseFloat(parts[1]);
-                def[2] = Float.parseFloat(parts[2]);
-            } else if (parts.length == 2) {
-                def[0] = Float.parseFloat(parts[0]);
-                def[1] = Float.parseFloat(parts[1]);
-            }
-        } catch (NumberFormatException ignored) {}
-        return def;
-    }
 }

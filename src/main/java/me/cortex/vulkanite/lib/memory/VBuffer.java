@@ -26,8 +26,13 @@ public class VBuffer {
     }
 
     public void free() {
+        if (allocation == null) return;
         allocation.free();
         allocation = null;
+    }
+
+    public boolean isFreed() {
+        return allocation == null;
     }
 
     public long deviceAddress() {

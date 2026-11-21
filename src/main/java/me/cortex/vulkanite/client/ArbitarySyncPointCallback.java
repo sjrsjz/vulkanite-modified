@@ -64,4 +64,15 @@ public class ArbitarySyncPointCallback {
             }
         }
     }
+
+    /** Flush deferred GL/Vulkan releases while the GL context is still current. */
+    public void drain() {
+        org.lwjgl.opengl.GL11C.glFinish();
+        while (!fenceQueue.isEmpty()) {
+            glDeleteSync(fenceQueue.dequeueLong());
+            callbackQueue.dequeue().run();
+        }
+        Runnable callback;
+        while ((callback = generateCallback()) != null) callback.run();
+    }
 }
