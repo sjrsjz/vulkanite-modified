@@ -11,6 +11,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class MixinStandardMacros {
     @Inject(method = "createStandardEnvironmentDefines", at = @At("RETURN"), cancellable = true)
     private static void injectVulkaniteDefine(CallbackInfoReturnable<com.google.common.collect.ImmutableList<StringPair>> cir) {
+        if (!me.cortex.vulkanite.client.Vulkanite.supportsRayTracing()) return;
         var defines = new java.util.ArrayList<StringPair>();
         cir.getReturnValue().forEach(defines::add);
         defines.add(new StringPair("VULKANITE", "1"));

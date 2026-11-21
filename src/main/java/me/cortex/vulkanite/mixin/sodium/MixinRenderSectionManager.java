@@ -20,7 +20,7 @@ public class MixinRenderSectionManager {
     private void vulkanite$acceptMesh(Viewport viewport, RenderSection section, ChunkBuildOutput result,
             List<RenderSection> patches, CallbackInfoReturnable<Integer> cir) {
         if (RaytracingPackState.isActive() && !section.isDisposed()) {
-            Vulkanite.INSTANCE.upload(List.of(result));
+            Vulkanite.INSTANCE.upload(result);
         }
     }
 

@@ -19,7 +19,6 @@ import static org.lwjgl.util.vma.Vma.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIA
 import static org.lwjgl.vulkan.KHRBufferDeviceAddress.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR;
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.*;
 import static org.lwjgl.vulkan.VK10.*;
-import static org.lwjgl.vulkan.VK11.vkGetPhysicalDeviceProperties2;
 
 public class RaytracePipelineBuilder {
 
@@ -64,7 +63,6 @@ public class RaytracePipelineBuilder {
         return this;
     }
 
-    //TODO: generate stb
     public VRaytracePipeline build(VContext context, int maxDepth) {
         shaders.add(gen);
 
@@ -116,56 +114,30 @@ public class RaytracePipelineBuilder {
                 groupsArr.rewind();
             }
 
-            VkPipelineLayoutCreateInfo layoutCreateInfo = VkPipelineLayoutCreateInfo.calloc(stack)
-                    .sType$Default();
-
-            {
-                //TODO: cleanup and add push constants
-                layoutCreateInfo.pSetLayouts(stack.longs(layouts.stream().mapToLong(a->a.layout).toArray()));
+            var props = context.properties.rtPipelineProperties;
+            long groupBaseAlignment = props.shaderGroupBaseAlignment();
+            int handleSize = props.shaderGroupHandleSize();
+            int handleAlignment = props.shaderGroupHandleAlignment();
+            if (handleSize == 0 || groupBaseAlignment == 0 || handleAlignment == 0) {
+                throw new IllegalStateException("Invalid Vulkan shader binding table properties");
             }
+            long handleSizeAligned = alignUp(handleSize, handleAlignment);
 
+            var layoutCreateInfo = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
+                    .pSetLayouts(stack.longs(layouts.stream().mapToLong(set -> set.layout).toArray()));
             LongBuffer pLayout = stack.mallocLong(1);
+            LongBuffer pPipeline = stack.callocLong(1);
             _CHECK_(vkCreatePipelineLayout(context.device, layoutCreateInfo, null, pLayout));
-
-
-            var pipelineCreateInfo = VkRayTracingPipelineCreateInfoKHR.calloc(stack)
-                    .sType$Default()
-                    .layout(pLayout.get(0))
-                    .pStages(shaderStages)
-                    .pGroups(groupsArr)
-                    .maxPipelineRayRecursionDepth(maxDepth);
-
-            LongBuffer pPipeline = stack.mallocLong(1);
-            _CHECK_(vkCreateRayTracingPipelinesKHR(context.device, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                    VkRayTracingPipelineCreateInfoKHR.create(pipelineCreateInfo.address(), 1),
-                    null, pPipeline));
-
-
-            {
-                //Generate the SBT lut
-                var props = context.properties.rtPipelineProperties;
-                long groupBaseAlignment = props.shaderGroupBaseAlignment();
-                long handleSize = props.shaderGroupHandleSize();
-                long handleSizeAligned = alignUp(handleSize, props.shaderGroupHandleAlignment());
-
-                // If the cached properties returned 0, query directly as fallback
-                if (handleSize == 0) {
-                    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps =
-                            VkPhysicalDeviceRayTracingPipelinePropertiesKHR.calloc(stack)
-                                    .sType$Default();
-                    VkPhysicalDeviceProperties2 props2 = VkPhysicalDeviceProperties2.calloc(stack)
-                            .sType$Default()
-                            .pNext(rtProps);
-                    vkGetPhysicalDeviceProperties2(context.device.getPhysicalDevice(), props2);
-                    groupBaseAlignment = rtProps.shaderGroupBaseAlignment();
-                    handleSize = rtProps.shaderGroupHandleSize();
-                    handleSizeAligned = alignUp(handleSize, rtProps.shaderGroupHandleAlignment());
-                }
-
-                // Guard against zero handle size (should never happen on a real RT-capable GPU)
-                if (handleSize == 0) {
-                    throw new IllegalStateException("Shader group handle size is 0 - ray tracing not supported?");
-                }
+            VBuffer sbtMap = null;
+            try {
+                var pipelineCreateInfo = VkRayTracingPipelineCreateInfoKHR.calloc(1, stack)
+                        .sType$Default()
+                        .layout(pLayout.get(0))
+                        .pStages(shaderStages)
+                        .pGroups(groupsArr)
+                        .maxPipelineRayRecursionDepth(maxDepth);
+                _CHECK_(vkCreateRayTracingPipelinesKHR(context.device, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                        pipelineCreateInfo, null, pPipeline));
 
                 int totalGroups = groupsArr.capacity();
 
@@ -180,14 +152,13 @@ public class RaytracePipelineBuilder {
                 // Pad an extra handle size at the end, so that even if we don't have call groups, the address is still in bounds
                 long sbtSize = alignUp(callGroupBase + callGroupCount * handleSizeAligned + handleSizeAligned, groupBaseAlignment);
 
-                ByteBuffer handles = stack.malloc(totalGroups * (int)handleSize);
+                ByteBuffer handles = stack.malloc(Math.multiplyExact(totalGroups, handleSize));
                 _CHECK_(vkGetRayTracingShaderGroupHandlesKHR(context.device, pPipeline.get(0), 0, totalGroups, handles),
                         "Failed to obtain ray tracing group handles");
 
                 long aHandles = MemoryUtil.memAddress(handles);
 
-                //TODO/FIXME: add alignment to gpu buffer
-                VBuffer sbtMap = context.memory.createBuffer(sbtSize,
+                sbtMap = context.memory.createBuffer(sbtSize,
                         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                 VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR,
@@ -195,28 +166,25 @@ public class RaytracePipelineBuilder {
                         groupBaseAlignment, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
                 long ptr = sbtMap.map();
 
-                // Groups in order of RayGen, Miss Groups, Hit Groups, and callable
-                // 1. Copy ray gen
-                memCopy(aHandles, ptr + rgenBase, handleSize);
-                aHandles += handleSize;
-                // 2. Copy miss groups
-                for (int i = 0; i < missGroupCount; i++) {
-                    memCopy(aHandles, ptr + missGroupBase + handleSizeAligned * i, handleSize);
+                try {
+                    memCopy(aHandles, ptr + rgenBase, handleSize);
                     aHandles += handleSize;
+                    for (int i = 0; i < missGroupCount; i++) {
+                        memCopy(aHandles, ptr + missGroupBase + handleSizeAligned * i, handleSize);
+                        aHandles += handleSize;
+                    }
+                    for (int i = 0; i < hitGroupsCount; i++) {
+                        memCopy(aHandles, ptr + hitGroupsBase + handleSizeAligned * i, handleSize);
+                        aHandles += handleSize;
+                    }
+                    for (int i = 0; i < callGroupCount; i++) {
+                        memCopy(aHandles, ptr + callGroupBase + handleSizeAligned * i, handleSize);
+                        aHandles += handleSize;
+                    }
+                    sbtMap.flush();
+                } finally {
+                    sbtMap.unmap();
                 }
-                // 3. Copy hit groups
-                for (int i = 0; i < hitGroupsCount; i++) {
-                    memCopy(aHandles, ptr + hitGroupsBase + handleSizeAligned * i, handleSize);
-                    aHandles += handleSize;
-                }
-                // 4. Copy callable
-                for (int i = 0; i < callGroupCount; i++) {
-                    memCopy(aHandles, ptr + callGroupBase + handleSizeAligned * i, handleSize);
-                    aHandles += handleSize;
-                }
-
-                sbtMap.unmap();
-                sbtMap.flush();
 
                 return new VRaytracePipeline(context, pPipeline.get(0), pLayout.get(0), sbtMap,
                         VkStridedDeviceAddressRegionKHR.calloc().set(sbtMap.deviceAddress() + rgenBase, handleSizeAligned, handleSizeAligned),
@@ -225,6 +193,11 @@ public class RaytracePipelineBuilder {
                         VkStridedDeviceAddressRegionKHR.calloc().set(sbtMap.deviceAddress() + callGroupBase, handleSizeAligned, handleSizeAligned * callGroupCount),
                         shaders
                 );
+            } catch (RuntimeException | Error failure) {
+                if (sbtMap != null) sbtMap.free();
+                vkDestroyPipeline(context.device, pPipeline.get(0), null);
+                vkDestroyPipelineLayout(context.device, pLayout.get(0), null);
+                throw failure;
             }
         }
     }

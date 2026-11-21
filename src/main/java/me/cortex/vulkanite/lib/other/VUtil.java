@@ -4,8 +4,6 @@ import org.lwjgl.system.MemoryStack;
 
 import java.nio.LongBuffer;
 
-import static org.lwjgl.opengl.GL11C.GL_NO_ERROR;
-import static org.lwjgl.opengl.GL11C.glGetError;
 import static org.lwjgl.vulkan.EXTDebugReport.VK_ERROR_VALIDATION_FAILED_EXT;
 import static org.lwjgl.vulkan.KHRDisplaySwapchain.VK_ERROR_INCOMPATIBLE_DISPLAY_KHR;
 import static org.lwjgl.vulkan.KHRSurface.VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
@@ -90,14 +88,6 @@ public class VUtil {
         }
         return ret;
     }
-
-    public static void _CHECK_GL_ERROR_() {
-        int e = glGetError();
-        if (e != GL_NO_ERROR) {
-            throw new AssertionError("Gl error: "+e);
-        }
-    }
-
 
     public static int alignUp(int size, int alignment) {
         return (size + alignment - 1) & -alignment;

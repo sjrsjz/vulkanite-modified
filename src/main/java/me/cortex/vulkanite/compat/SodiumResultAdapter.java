@@ -13,15 +13,19 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-//TODO: FIXME! the native buffer is destroyed by the AccelerationBlasBuilder after its copied to the gpu, however
-// on world reload or for whatever reason that the result is destroyed (and not submitted to the blas builder)
-// must find a way to free the native buffers
 public class SodiumResultAdapter {
     private static final float COPLANAR_CUTOUT_OFFSET = 1.0f / 64.0f;
 
     public static void compute(ChunkBuildOutput buildResult) {
         var ebr = (IAccelerationBuildResult) buildResult;
-        int stride = ebr.getVertexFormat().getVertexFormat().getVertexSize();
+        var format = ebr.getVertexFormat().getVertexFormat();
+        var blockIdElement = format.getElement("mc_Entity");
+        var midTextureElement = format.getElement("mc_midTexCoord");
+        // A meshing task can straddle a shader toggle and still use Sodium's compact format.
+        if (blockIdElement == null || midTextureElement == null) return;
+        int stride = format.getVertexSize();
+        int blockIdOffset = blockIdElement.offset();
+        int midTextureOffset = midTextureElement.offset();
         Set<QuadPositionKey> solidQuadPositions = collectSolidQuadPositions(buildResult, stride);
 
         Map<TerrainRenderPass, GeometryData> blasMap = new HashMap<>();
@@ -67,7 +71,7 @@ public class SodiumResultAdapter {
                     long quadOffset = (long) quadIdx * 40 * 4;
                     boolean offsetCoplanarCutout = pass.getKey() == DefaultTerrainRenderPasses.CUTOUT
                             && solidQuadPositions.contains(quadPositionKey(srcVert, stride, startVertex));
-                    encodeQuad(srcVert, stride, startVertex,
+                    encodeQuad(srcVert, stride, startVertex, blockIdOffset, midTextureOffset,
                             blasAddr, (long) quadIdx * 4 * 8,
                             geomBuf, quadOffset, offsetCoplanarCutout);
                     quadIdx++;
@@ -75,8 +79,6 @@ public class SodiumResultAdapter {
                 vertexStart += segVertexCount;
             }
 
-            blasMap.put(pass.getKey(), new GeometryData(quadCount, blasBuffer));
-            geomBuffersMap.put(pass.getKey(), geomBuffer);
         }
 
         if (!blasMap.isEmpty()) {
@@ -142,23 +144,6 @@ public class SodiumResultAdapter {
     private static float decodeYFromPacked(long packed) { return decodePosition20((int)((packed >> 20) & 0xFFFFF)); }
     private static float decodeZFromPacked(long packed) { return decodePosition20((int)((packed >> 40) & 0xFFFFF)); }
 
-    // ---- Iris 1.11.2 XHFP field decoders ----
-
-    // Iris 1.11.2 packs block_id at offset 20 (R32_UINT):
-    //   packBlockId = ((contextHolder.getBlockId() + 1) << 1) | (contextHolder.getRenderType() & 1)
-    private static int decodeBlockId(long srcVertBase, int vertexIdx, int stride) {
-        long base = srcVertBase + (long) vertexIdx * stride;
-        int packed = MemoryUtil.memGetInt(base + 20);
-        return (packed >> 1) - 1;
-    }
-
-    // Iris 1.11.2 midTexCoord at offset 28 (RG16_UINT):
-    //   encodeOld: ((round(u*32768) & 0xFFFF) << 0) | ((round(v*32768) & 0xFFFF) << 16)
-    private static int decodeMidTexCoord(long srcVertBase, int vertexIdx, int stride) {
-        long base = srcVertBase + (long) vertexIdx * stride;
-        return MemoryUtil.memGetInt(base + 28);
-    }
-
     private static float decodeMidU(int midTC) {
         return (midTC & 0xFFFF) / 32768.0f;
     }
@@ -207,7 +192,7 @@ public class SodiumResultAdapter {
 
     // ---- Encode one quad (4 vertices) into both BLAS buffer and 40-byte geometry buffer ----
 
-    private static void encodeQuad(long srcVertBase, int stride, int startVertex,
+    private static void encodeQuad(long srcVertBase, int stride, int startVertex, int blockIdOffset, int midTextureOffset,
                                    long blasAddr, long blasQuadOffset,
                                    ByteBuffer geomBuf, long geomQuadOffset,
                                    boolean offsetCoplanarCutout) {
@@ -238,8 +223,8 @@ public class SodiumResultAdapter {
             lights[i] = MemoryUtil.memGetInt(base + 16);
 
             if (i == 0) {
-                blockId = decodeBlockId(srcVertBase, vi, stride);
-                midTC = decodeMidTexCoord(srcVertBase, vi, stride);
+                blockId = (MemoryUtil.memGetInt(base + blockIdOffset) >> 1) - 1;
+                midTC = MemoryUtil.memGetInt(base + midTextureOffset);
                 midU = decodeMidU(midTC);
                 midV = decodeMidV(midTC);
             }

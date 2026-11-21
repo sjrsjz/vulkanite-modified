@@ -1,5 +1,6 @@
 package me.cortex.vulkanite.mixin.iris;
 
+import me.cortex.vulkanite.client.Vulkanite;
 import me.cortex.vulkanite.compat.IGetRaytracingSource;
 import me.cortex.vulkanite.compat.RaytracingShaderSource;
 import net.irisshaders.iris.shaderpack.ShaderPack;
@@ -35,6 +36,7 @@ public abstract class MixinProgramSet implements IGetRaytracingSource {
     @Inject(method = "<init>", at = @At("TAIL"))
     private void injectRTShaders(AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider,
             ShaderProperties shaderProperties, ShaderPack pack, CallbackInfo ci) {
+        if (!Vulkanite.supportsRayTracing()) return;
 
         Function<String, String> load = filename -> sourceProvider.apply(directory.resolve(filename));
 

@@ -3,180 +3,97 @@ package me.cortex.vulkanite.lib.descriptors;
 import me.cortex.vulkanite.lib.base.VContext;
 import me.cortex.vulkanite.lib.memory.VAccelerationStructure;
 import me.cortex.vulkanite.lib.memory.VBuffer;
-import me.cortex.vulkanite.lib.other.VImageView;
-import me.cortex.vulkanite.lib.other.VSampler;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
 import org.lwjgl.vulkan.VkDescriptorImageInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 import org.lwjgl.vulkan.VkWriteDescriptorSetAccelerationStructureKHR;
 
+import java.util.List;
+
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 import static org.lwjgl.vulkan.VK10.*;
 
-import java.util.List;
-
-public class DescriptorUpdateBuilder {
-    private final VContext ctx;
-    private final MemoryStack stack;
+public final class DescriptorUpdateBuilder implements AutoCloseable {
+    private final VContext context;
+    private final MemoryStack stack = MemoryStack.stackPush();
     private final VkWriteDescriptorSet.Buffer updates;
-    private final VImageView placeholderImageView;
-    public DescriptorUpdateBuilder(VContext ctx, int maxUpdates) {
-        this(ctx, maxUpdates, null);
-    }
-
-    public DescriptorUpdateBuilder(VContext ctx, int maxUpdates, VImageView placeholderImageView) {
-        this.ctx = ctx;
-        this.stack = MemoryStack.stackPush();
-        this.updates = VkWriteDescriptorSet.calloc(maxUpdates, stack);
-        this.placeholderImageView = placeholderImageView;
-    }
-
-    private long viewOrPlaceholder(VImageView v) {
-        if (v == null && placeholderImageView == null) return 0;
-        return v == null ? placeholderImageView.view : v.view;
-    }
-
     private long set;
+
+    public DescriptorUpdateBuilder(VContext context, int maxUpdates) {
+        this.context = context;
+        try {
+            updates = VkWriteDescriptorSet.calloc(maxUpdates, stack);
+        } catch (RuntimeException | Error failure) {
+            stack.close();
+            throw failure;
+        }
+    }
+
     public DescriptorUpdateBuilder set(long set) {
         this.set = set;
         return this;
     }
 
+    private VkWriteDescriptorSet write(int binding, int type, int count) {
+        return updates.get().sType$Default().dstSet(set).dstBinding(binding).descriptorType(type).descriptorCount(count);
+    }
+
     public DescriptorUpdateBuilder buffer(int binding, VBuffer buffer) {
-        return buffer(binding, buffer, 0, VK_WHOLE_SIZE);
+        return buffer(binding, buffer.buffer(), 0, buffer.size());
     }
-    public DescriptorUpdateBuilder buffer(int binding, VBuffer buffer, long offset, long range) {
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(1)
-                .pBufferInfo(VkDescriptorBufferInfo
-                        .calloc(1, stack)
-                        .buffer(buffer.buffer())
-                        .offset(offset)
-                        .range(range));
 
+    public DescriptorUpdateBuilder buffer(int binding, long buffer, long offset, long range) {
+        write(binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1)
+                .pBufferInfo(VkDescriptorBufferInfo.calloc(1, stack).buffer(buffer).offset(offset).range(range));
         return this;
     }
 
-    public DescriptorUpdateBuilder buffer(int binding, int dstArrayElement, List<VBuffer> buffers) {
-        var bufInfo = VkDescriptorBufferInfo.calloc(buffers.size(), stack);
+    public DescriptorUpdateBuilder buffer(int binding, int firstElement, List<VBuffer> buffers) {
+        var info = VkDescriptorBufferInfo.calloc(buffers.size(), stack);
         for (int i = 0; i < buffers.size(); i++) {
-            bufInfo.get(i)
-                    .buffer(buffers.get(i).buffer())
-                    .offset(0)
-                    .range(VK_WHOLE_SIZE);
+            var buffer = buffers.get(i);
+            info.get(i).buffer(buffer.buffer()).range(buffer.size());
         }
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .dstArrayElement(dstArrayElement)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(buffers.size())
-                .pBufferInfo(bufInfo);
-
+        write(binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffers.size()).dstArrayElement(firstElement).pBufferInfo(info);
         return this;
     }
-
 
     public DescriptorUpdateBuilder uniform(int binding, VBuffer buffer) {
-        return uniform(binding, buffer, 0, VK_WHOLE_SIZE);
-    }
-    public DescriptorUpdateBuilder uniform(int binding, VBuffer buffer, long offset, long range) {
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-                .descriptorCount(1)
-                .pBufferInfo(VkDescriptorBufferInfo
-                        .calloc(1, stack)
-                        .buffer(buffer.buffer())
-                        .offset(offset)
-                        .range(range));
+        write(binding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1)
+                .pBufferInfo(VkDescriptorBufferInfo.calloc(1, stack).buffer(buffer.buffer()).range(buffer.size()));
         return this;
     }
 
-    public DescriptorUpdateBuilder acceleration(int binding, VAccelerationStructure... structures) {
-        var buff = stack.mallocLong(structures.length);
-        for (var structure : structures) {
-            buff.put(structure.structure);
-        }
-        buff.rewind();
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
-                .descriptorCount(structures.length)
-                .pNext(VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack)
-                        .sType$Default()
-                        .pAccelerationStructures(buff));
+    public DescriptorUpdateBuilder acceleration(int binding, VAccelerationStructure structure) {
+        write(binding, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1)
+                .pNext(VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack).sType$Default()
+                        .pAccelerationStructures(stack.longs(structure.structure)));
         return this;
     }
 
-    public DescriptorUpdateBuilder imageStore(int binding, VImageView view) {
-        return imageStore(binding, VK_IMAGE_LAYOUT_GENERAL, view);
-    }
-    public DescriptorUpdateBuilder imageStore(int binding, int layout, VImageView view) {
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                .descriptorCount(1)
-                .pImageInfo(VkDescriptorImageInfo
-                        .calloc(1, stack)
-                        .imageLayout(layout)
-                        .imageView(viewOrPlaceholder(view)));
+    public DescriptorUpdateBuilder sampledImage(int binding, long view, long sampler) {
+        write(binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1)
+                .pImageInfo(VkDescriptorImageInfo.calloc(1, stack).imageLayout(VK_IMAGE_LAYOUT_GENERAL)
+                        .imageView(view).sampler(sampler));
         return this;
     }
 
-    public DescriptorUpdateBuilder imageSampler(int binding, VImageView view, VSampler sampler) {
-        return imageSampler(binding, VK_IMAGE_LAYOUT_GENERAL, view, sampler);
-    }
-
-    public DescriptorUpdateBuilder imageSampler(int binding, int layout, VImageView view, VSampler sampler) {
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                .descriptorCount(1)
-                .pImageInfo(VkDescriptorImageInfo
-                        .calloc(1, stack)
-                        .imageLayout(layout)
-                        .imageView(viewOrPlaceholder(view))
-                        .sampler(sampler.sampler));
-        return this;
-    }
-
-    public DescriptorUpdateBuilder imageSamplerArray(int binding, int layout, VImageView[] views, VSampler sampler) {
-        var imageInfo = VkDescriptorImageInfo.calloc(views.length, stack);
+    public DescriptorUpdateBuilder sampledImages(int binding, long[] views, long sampler) {
+        var images = VkDescriptorImageInfo.calloc(views.length, stack);
         for (int i = 0; i < views.length; i++) {
-            imageInfo.get(i)
-                    .imageLayout(layout)
-                    .imageView(viewOrPlaceholder(views[i]))
-                    .sampler(sampler.sampler);
+            images.get(i).imageLayout(VK_IMAGE_LAYOUT_GENERAL).imageView(views[i]).sampler(sampler);
         }
-        updates.get()
-                .sType$Default()
-                .dstBinding(binding)
-                .dstSet(set)
-                .descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                .descriptorCount(views.length)
-                .pImageInfo(imageInfo);
+        write(binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, views.length).pImageInfo(images);
         return this;
     }
 
     public void apply() {
-        updates.limit(updates.position());
-        updates.rewind();
-        vkUpdateDescriptorSets(ctx.device, updates, null);
-        stack.pop();
+        if (updates.position() != 0) vkUpdateDescriptorSets(context.device, updates.flip(), null);
+    }
+
+    @Override
+    public void close() {
+        stack.close();
     }
 }

@@ -14,6 +14,6 @@ public class HiddenWindowMixin {
 
     @Inject(method = "<init>", at = @At("TAIL"))
     private void hideTestWindow(CallbackInfo ci) {
-        org.lwjgl.glfw.GLFW.glfwHideWindow(handle);
+        org.lwjgl.sdl.SDLVideo.SDL_HideWindow(handle);
     }
 }

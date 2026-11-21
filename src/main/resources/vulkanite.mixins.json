@@ -4,34 +4,26 @@
   "package": "me.cortex.vulkanite.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
-    "iris.MixinGlResource",
-    "iris.MixinGlTexture",
     "iris.MixinIrisRenderingPipeline",
-    "iris.MixinIrisGLDebug",
-    "iris.MixinPBRAtlasTexture",
     "iris.MixinProgramSet",
     "iris.MixinShaderPackSourceNames",
     "iris.MixinShaderProperties",
     "iris.MixinStandardMacros",
-    "minecraft.MixinAbstractTexture",
     "minecraft.MixinBlockEntityRenderDispatcher",
     "minecraft.MixinBlockModelFeatureRenderer",
     "minecraft.MixinMinecraftClient",
     "minecraft.MixinFeatureRenderDispatcher",
     "minecraft.MixinLevelRenderer",
-    "minecraft.MixinDynamicTexture",
     "minecraft.MixinEntityRenderDispatcher",
     "minecraft.MixinEntityRenderer",
     "minecraft.MixinEntityRenderState",
     "minecraft.MixinItemFeatureRenderer",
     "minecraft.MixinItemFeatureSubmit",
-    "minecraft.MixinGlDebug",
     "minecraft.MixinModelFeatureRenderer",
     "minecraft.MixinModelFeatureSubmit",
-    "minecraft.MixinReloadableTexture",
     "minecraft.MixinShadowFeatureRenderer",
     "minecraft.MixinSkullBlockRenderer",
-    "minecraft.MixinTextureAtlas",
+    "minecraft.MixinVulkanFeatureSets",
     "minecraft.RenderSetupAccessor",
     "minecraft.RenderSetupTextureBindingAccessor",
     "minecraft.RenderTypeAccessor",
@@ -45,9 +37,7 @@
     "defaultRequire": 1
   },
   "mixins": [
-    "iris.MixinShaderStorageBuffer",
     "iris.MixinHandRenderer",
-    "iris.ShaderPrinterProgramPrintBuilderInvoker",
-    "iris.ShaderStorageBufferHolderAccessor"
+    "iris.ShaderPrinterProgramPrintBuilderInvoker"
   ]
 }

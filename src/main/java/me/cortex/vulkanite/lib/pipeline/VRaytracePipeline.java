@@ -43,15 +43,15 @@ public class VRaytracePipeline extends TrackedResourceObject {
     }
 
     public void bind(VCmdBuff cmd) {
-        vkCmdBindPipeline(cmd.buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
+        vkCmdBindPipeline(cmd.buffer(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
     }
 
     public void trace(VCmdBuff cmd, int width, int height, int depth) {
-        vkCmdTraceRaysKHR(cmd.buffer, gen, miss, hit, callable, width, height, depth);
+        vkCmdTraceRaysKHR(cmd.buffer(), gen, miss, hit, callable, width, height, depth);
     }
 
     public void bindDSet(VCmdBuff cmd, long... descs) {
-        vkCmdBindDescriptorSets(cmd.buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, layout, 0, descs, null);
+        vkCmdBindDescriptorSets(cmd.buffer(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, layout, 0, descs, null);
     }
 
     public void free() {

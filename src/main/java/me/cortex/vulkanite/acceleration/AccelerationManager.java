@@ -1,125 +1,160 @@
 package me.cortex.vulkanite.acceleration;
 
-import me.cortex.vulkanite.lib.base.VContext;
 import me.cortex.vulkanite.client.rendering.entity.EntityGeometryFrame;
+import me.cortex.vulkanite.compat.IAccelerationBuildResult;
+import me.cortex.vulkanite.lib.base.VContext;
+import me.cortex.vulkanite.lib.cmd.VCmdBuff;
 import me.cortex.vulkanite.lib.descriptors.VDescriptorSetLayout;
 import me.cortex.vulkanite.lib.memory.VAccelerationStructure;
 import me.cortex.vulkanite.lib.memory.VBuffer;
-import me.cortex.vulkanite.lib.other.sync.VSemaphore;
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSection;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.ChunkBuildOutput;
+import net.caffeinemc.mods.sodium.client.render.chunk.terrain.DefaultTerrainRenderPasses;
+import net.minecraft.core.SectionPos;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
-public class AccelerationManager {
-    private final VContext ctx;
-    private final AccelerationTLASManager tlasManager;
-    private final AccelerationBlasBuilder blasBuilder;
-    private final List<VSemaphore> syncs = new LinkedList<>();
-    // BLAS results queued by background worker thread, drained on render thread in updateTick()
-    private final ConcurrentLinkedDeque<AccelerationBlasBuilder.BLASBatchResult> pendingResults = new ConcurrentLinkedDeque<>();
-    private EntityGeometryFrame pendingEntityGeometry;
-    private final SectionBuildState<RenderSection> sections = new SectionBuildState<>();
-    private boolean closed;
+import static org.lwjgl.vulkan.KHRAccelerationStructure.*;
 
-    public AccelerationManager(VContext context, int blasBuildQueue) {
-        this.ctx = context;
-        this.tlasManager = new AccelerationTLASManager(context, 0);
-        this.blasBuilder = new AccelerationBlasBuilder(context, blasBuildQueue, pendingResults::add,
-                data -> !data.section().isDisposed() && sections.isCurrent(data.section(), data.time()));
+public final class AccelerationManager implements AutoCloseable {
+    private static final int BUILDS_PER_FRAME = 32;
+    private final VContext context;
+    private final AccelerationBlasBuilder builder;
+    private final AccelerationTLASManager tlas;
+    private final SectionBuildState<RenderSection> versions = new SectionBuildState<>();
+    private final Map<RenderSection, PendingMesh> pending = new LinkedHashMap<>();
+    private EntityGeometryFrame entityFrame;
+
+    public AccelerationManager(VContext context) {
+        this.context = context;
+        builder = new AccelerationBlasBuilder(context);
+        tlas = new AccelerationTLASManager(context);
     }
 
-    // Called only after Sodium accepts a mesh on the render thread.
-    public void chunkBuilds(List<ChunkBuildOutput> results) {
-        for (var result : results) {
-            if (closed || ctx.sync.isDeviceLost() || result.section.isDisposed()) {
-                ((me.cortex.vulkanite.compat.IAccelerationBuildResult) result).releaseAccelerationGeometry();
-                continue;
-            }
-            long version = sections.accept(result.section);
-            if (((me.cortex.vulkanite.compat.IAccelerationBuildResult) result).getAccelerationGeometryData() == null) {
-                tlasManager.removeSection(result.section);
-            } else {
-                blasBuilder.enqueue(result, version);
-            }
+    private record PendingMesh(long version, List<AccelerationBlasBuilder.Geometry> geometries) {
+        void free() {
+            geometries.forEach(AccelerationBlasBuilder.Geometry::free);
         }
     }
 
-    // Called on render thread — drains BLAS results and updates TLAS data structures
-    public void updateTick() {
-        while (!pendingResults.isEmpty()) {
-            var batch = pendingResults.poll();
-            for (var result : batch.results()) {
-                var data = result.data();
-                if (!closed && !data.section().isDisposed() && sections.isCurrent(data.section(), data.time())) {
-                    tlasManager.updateSections(List.of(result));
-                } else {
-                    result.structure().free();
-                    data.geometryBuffers().forEach(VBuffer::free);
+    // Sodium publishes accepted build outputs on the render thread.
+    public void accept(ChunkBuildOutput output) {
+        var data = (IAccelerationBuildResult) output;
+        if (output.section.isDisposed()) {
+            data.releaseAccelerationGeometry();
+            return;
+        }
+
+        RenderSection section = output.section;
+        long version = versions.accept(section);
+        discardPending(section);
+        var positions = data.getAccelerationGeometryData();
+        if (positions == null || positions.isEmpty()) {
+            tlas.removeSection(section);
+            data.releaseAccelerationGeometry();
+            return;
+        }
+
+        var attributes = data.getGeometryBuffersData();
+        var geometries = new ArrayList<AccelerationBlasBuilder.Geometry>(positions.size());
+        for (var entry : positions.entrySet()) {
+            var vertices = entry.getValue();
+            int flags = entry.getKey() == DefaultTerrainRenderPasses.SOLID ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
+            geometries.add(new AccelerationBlasBuilder.Geometry(vertices.quadCount(), vertices.data(),
+                    attributes.get(entry.getKey()), flags));
+        }
+        pending.put(section, new PendingMesh(version, geometries));
+        data.setAccelerationGeometryData(null);
+        data.setGeometryBuffersData(null);
+    }
+
+    public VAccelerationStructure recordScene(VCmdBuff command) {
+        var jobs = pending.entrySet().iterator();
+        for (int count = 0; count < BUILDS_PER_FRAME && jobs.hasNext(); count++) {
+            var entry = jobs.next();
+            RenderSection section = entry.getKey();
+            PendingMesh mesh = entry.getValue();
+            jobs.remove();
+            try {
+                if (!section.isDisposed() && versions.isCurrent(section, mesh.version())) {
+                    var built = builder.build(command, mesh.geometries(), VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+                    tlas.updateSection(section, built);
                 }
+            } finally {
+                mesh.free();
             }
-            syncs.add(batch.semaphore());
         }
+
+        EntityGeometryFrame frame = entityFrame;
+        entityFrame = null;
+        if (frame == null) {
+            tlas.clearEntity();
+        } else {
+            try {
+                buildEntity(command, frame);
+            } finally {
+                frame.free();
+            }
+        }
+
+        return tlas.build(command);
     }
 
-    public VAccelerationStructure buildTLAS(VSemaphore inLink, VSemaphore outLink) {
-        EntityGeometryFrame entityGeometry;
-        synchronized (this) {
-            entityGeometry = pendingEntityGeometry;
-            pendingEntityGeometry = null;
+    private void buildEntity(VCmdBuff command, EntityGeometryFrame frame) {
+        var geometry = new AccelerationBlasBuilder.Geometry(frame.quadCount(), frame.vertices(), frame.geometry(), 0);
+        var mesh = builder.build(command, List.of(geometry), VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR);
+        VBuffer motion = null;
+        try {
+            long size = frame.motion().getLength();
+            motion = context.memory.createBuffer(size,
+                    org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    org.lwjgl.vulkan.VK10.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            command.upload(context, org.lwjgl.system.MemoryUtil.memAddress(frame.motion().getDirectBuffer()), motion, size);
+        } catch (RuntimeException | Error failure) {
+            context.retire(mesh::free);
+            if (motion != null) context.retire(motion::free);
+            throw failure;
         }
-        tlasManager.buildTLAS(inLink, outLink, syncs.toArray(new VSemaphore[0]), entityGeometry);
-        syncs.clear();
-        return tlasManager.getTlas();
+        tlas.updateEntity(mesh, motion, frame.originX(), frame.originY(), frame.originZ());
     }
 
-    public synchronized void setEntityGeometry(EntityGeometryFrame geometry) {
-        if (pendingEntityGeometry != null) {
-            pendingEntityGeometry.free();
-        }
-        pendingEntityGeometry = geometry;
+    public void setEntityGeometry(EntityGeometryFrame geometry) {
+        if (entityFrame != null) entityFrame.free();
+        entityFrame = geometry;
+    }
+
+    private void discardPending(RenderSection section) {
+        var mesh = pending.remove(section);
+        if (mesh != null) mesh.free();
     }
 
     public void sectionRemove(RenderSection section) {
-        sections.remove(section);
-        tlasManager.removeSection(section);
+        versions.remove(section);
+        discardPending(section);
+        tlas.removeSection(section);
     }
 
     public void clearWorld() {
-        sections.clear();
-        synchronized (this) {
-            if (pendingEntityGeometry != null) {
-                pendingEntityGeometry.free();
-                pendingEntityGeometry = null;
-            }
-        }
-        tlasManager.clearSections();
-        updateTick();
+        versions.clear();
+        pending.values().forEach(PendingMesh::free);
+        pending.clear();
+        setEntityGeometry(null);
+        tlas.clear();
     }
 
-    public void cleanup() {
-        if (closed) return;
-        closed = true;
-        sections.clear();
-        blasBuilder.shutdown();
-        ctx.cmd.waitQueueIdle(0);
-        ctx.cmd.waitQueueIdle(1);
-        updateTick();
-        syncs.forEach(VSemaphore::free);
-        syncs.clear();
-        synchronized (this) {
-            if (pendingEntityGeometry != null) {
-                pendingEntityGeometry.free();
-                pendingEntityGeometry = null;
-            }
-        }
-        tlasManager.cleanupTick();
+    @Override
+    public void close() {
+        clearWorld();
+        tlas.close();
     }
 
-    public long getGeometrySet() { return tlasManager.getGeometrySet(); }
-    public int getTerrainSectionCount() { return tlasManager.getTerrainSectionCount(); }
-    public java.util.Set<net.minecraft.core.SectionPos> getTerrainSections() { return tlasManager.getTerrainSections(); }
-    public VDescriptorSetLayout getGeometryLayout() { return tlasManager.getGeometryLayout(); }
-    public VBuffer getEntityMotionBuffer() { return tlasManager.getEntityMotionBuffer(); }
+    public long getGeometrySet() { return tlas.getGeometrySet(); }
+    public VDescriptorSetLayout getGeometryLayout() { return tlas.getGeometryLayout(); }
+    public VBuffer getEntityMotionBuffer() { return tlas.getEntityMotionBuffer(); }
+    public int getTerrainSectionCount() { return tlas.getTerrainSectionCount(); }
+    public Set<SectionPos> getTerrainSections() { return tlas.getTerrainSections(); }
 }

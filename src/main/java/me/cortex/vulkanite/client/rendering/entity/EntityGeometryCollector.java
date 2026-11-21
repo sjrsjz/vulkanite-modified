@@ -175,7 +175,8 @@ public final class EntityGeometryCollector {
             return false;
         }
 
-        Identifier texture = textureOf(submit.renderType(), submit.sprite());
+        Identifier texture = textureOf(submit.renderType(),
+                submit.uvMapping() instanceof TextureAtlasSprite sprite ? sprite : null);
         if (texture == null) {
             handRejectedTexture += handFrameOpen ? 1 : 0;
             return false;
@@ -188,7 +189,7 @@ public final class EntityGeometryCollector {
 
         List<CapturedVertex> captured = new ArrayList<>();
         CapturingConsumer capture = new CapturingConsumer(textureIndex, captured);
-        VertexConsumer consumer = submit.sprite() != null ? submit.sprite().wrap(capture) : capture;
+        VertexConsumer consumer = submit.uvMapping() != null ? submit.uvMapping().wrap(capture) : capture;
         PoseStack poseStack = new PoseStack();
         poseStack.last().set(submit.pose());
         submit.model().setupAnim(submit.state());
@@ -739,6 +740,11 @@ public final class EntityGeometryCollector {
         public VertexConsumer setUv2(int u, int v) {
             current.lightU = u;
             current.lightV = v;
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv3(float u, float v) {
             return this;
         }
 

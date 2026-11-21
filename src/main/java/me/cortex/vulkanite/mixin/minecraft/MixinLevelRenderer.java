@@ -17,6 +17,7 @@ public class MixinLevelRenderer {
     @Inject(method = "submitFeatures", at = @At("HEAD"))
     private void vulkanite$beginEntityCapture(LevelRenderState levelRenderState,
             SubmitNodeCollector submitNodeCollector, boolean renderOutline, CallbackInfo ci) {
+        if (!EntityGeometryCollector.INSTANCE.isRayTracingActive()) return;
         Minecraft minecraft = Minecraft.getInstance();
         PoseStack handView = new PoseStack();
         GameRendererAccessor gameRenderer = (GameRendererAccessor) minecraft.gameRenderer;

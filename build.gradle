@@ -1,5 +1,5 @@
 plugins {
-    id 'net.fabricmc.fabric-loom' version '1.18.0-alpha.7'
+    id 'net.fabricmc.fabric-loom' version '1.18.4'
     id 'maven-publish'
 }
 
@@ -7,19 +7,15 @@ version = project.mod_version
 group = project.maven_group
 
 repositories {
-    exclusiveContent {
-        forRepository {
-            maven {
-                name = "Modrinth"
-                url = "https://api.modrinth.com/maven"
-            }
-        }
-        filter {
-            includeGroup "maven.modrinth"
-        }
+    maven {
+        url = "https://maven.caffeinemc.net/releases"
+        content { includeGroup 'net.caffeinemc' }
     }
     mavenCentral()
 }
+
+def irisJar = providers.gradleProperty('irisJar')
+        .orElse('../iris/build/libs/iris-fabric-1.12.1-snapshot+mc26.3-local.jar')
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'
@@ -29,25 +25,8 @@ dependencies {
     // Fabric API - use full bundle
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
-    implementation "maven.modrinth:sodium:mc26.2-0.9.1-fabric"
-    implementation "maven.modrinth:iris:1.11.2+26.2-fabric"
-
-    runtimeOnly 'org.anarres:jcpp:1.4.14'
-    runtimeOnly 'io.github.douira:glsl-transformer:2.0.0-pre13'
-    runtimeOnly 'net.java.dev.jna:jna:5.9.0'
-}
-
-tasks.register('interopTest', JavaExec) {
-    group = 'verification'
-    description = 'Runs native OpenGL/Vulkan tests on an RT-capable GPU; optionally compiles -Pshaderpack=...'
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'me.cortex.vulkanite.InteropSmokeTest'
-    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
-    jvmArgs '--enable-native-access=ALL-UNNAMED'
-    workingDir layout.buildDirectory.dir('interop-test').get().asFile
-    doFirst { workingDir.mkdirs() }
-    if (providers.gradleProperty('shaderpack').isPresent()) args providers.gradleProperty('shaderpack').get()
+    implementation 'net.caffeinemc:sodium-fabric:0.9.3-beta.5+mc26.3'
+    implementation files(irisJar)
 }
 
 // Opt-in, isolated end-to-end test mod. It is never included in the release jar.
@@ -69,7 +48,8 @@ if (providers.gradleProperty('smokeTest').isPresent()) {
                 source sourceSets.smoke
                 runDir 'build/smoke-client'
                 vmArgs '--enable-native-access=ALL-UNNAMED', '-Dmixin.debug.verify=true'
-                programArgs '--width', '640', '--height', '360', '--username', 'VulkaniteSmoke'
+                if (!providers.gradleProperty('shaderpack').isPresent()) vmArg '-Dvulkanite.smokeProbe=true'
+                programArgs '--graphicsBackend', 'vulkan', '--width', '640', '--height', '360', '--username', 'VulkaniteSmoke'
             }
         }
     }
@@ -77,18 +57,26 @@ if (providers.gradleProperty('smokeTest').isPresent()) {
         doLast {
             def testDir = layout.buildDirectory.dir('smoke-client').get().asFile
             new File(testDir, 'config').mkdirs()
-            new File(testDir, 'config/iris.properties').text = 'enableShaders=true\nshaderPack=Dirt RT\nenableDebugOptions=true\n'
+            def selectedPack = providers.gradleProperty('shaderpack')
+            def packName = selectedPack.isPresent() ? 'Dirt RT' : 'Vulkanite probe'
+            new File(testDir, 'config/iris.properties').text = "enableShaders=true\nshaderPack=${packName}\n"
             new File(testDir, 'options.txt').text = 'renderDistance:4\nsimulationDistance:5\nmaxFps:120\nenableVsync:false\npauseOnLostFocus:false\n'
-            if (providers.gradleProperty('shaderpack').isPresent()) {
-                copy {
-                    from(providers.gradleProperty('shaderpack').get()) { include 'shaders/**' }
-                    into new File(testDir, 'shaderpacks/Dirt RT')
-                }
+            new File(testDir, 'smoke-result.txt').delete()
+            def packDir = file(selectedPack.getOrElse('src/smoke/shaderpack'))
+            if (!new File(packDir, 'shaders').isDirectory()) {
+                throw new GradleException("Missing shaderpack shaders directory at ${packDir}")
+            }
+            project.sync { copy ->
+                copy.from new File(packDir, 'shaders')
+                copy.into new File(testDir, "shaderpacks/${packName}/shaders")
             }
         }
     }
     tasks.named('runSmokeClient') {
         dependsOn 'prepareSmokeClient'
+        def config = layout.buildDirectory.file('smoke-client/launch.cfg').get().asFile
+        jvmArgumentProviders.add({ ["-Dfabric.dli.config=${config.absolutePath}".toString()] }
+                as CommandLineArgumentProvider)
         doFirst {
             def lines = file('.gradle/loom-cache/launch.cfg').readLines()
             if (providers.gradleProperty('assetsDir').isPresent()) {
@@ -99,11 +87,7 @@ if (providers.gradleProperty('smokeTest').isPresent()) {
                     }
                 }
             }
-            def config = layout.buildDirectory.file('smoke-client/launch.cfg').get().asFile
             config.text = lines.join('\n') + '\n'
-            jvmArguments.set(jvmArguments.get().collect { arg ->
-                arg.startsWith('-Dfabric.dli.config=') ? '-Dfabric.dli.config=' + config.absolutePath : arg
-            })
         }
     }
 }
@@ -144,31 +128,4 @@ publishing {
     }
     repositories {
     }
-}
-
-// LWJGL dependencies
-project.ext.lwjglVersion = "3.4.1"
-project.ext.jomlVersion = "1.10.4"
-
-// Detect OS for native library selection
-def osName = System.getProperty("os.name").toLowerCase()
-project.ext.lwjglNatives = osName.contains("windows") ? "natives-windows" : "natives-linux"
-
-dependencies {
-    // LWJGL BOM for version management
-    implementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
-
-    // Core Vulkan dependencies - bundled with mod
-    // All LWJGL provided by Minecraft 26.2 runtime (3.4.1-snapshot).
-    // Bundling ANY lwjgl native causes ABI conflict → VK_ERROR_DEVICE_LOST.
-    // Shaderc/spvc/meshoptimizer excluded — shader compilation deferred to build time.
-    implementation("org.lwjgl:lwjgl:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-glfw:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-opengl:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-vulkan:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-vma:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-shaderc:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-spvc:$lwjglVersion")
-    implementation("org.lwjgl:lwjgl-meshoptimizer:$lwjglVersion")
-    implementation("org.joml:joml:${jomlVersion}")
 }

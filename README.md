@@ -1,77 +1,54 @@
-# Vulkanite for Minecraft 26.2
+# Vulkanite for Minecraft 26.3
 
-Vulkanite adds hardware ray tracing passes to Iris shaderpacks through OpenGL/Vulkan shared memory. This fork ports [mcrcortex's Vulkanite](https://github.com/mcrcortex/vulkanite) to Minecraft 26.2, maintained by [sjrsjz](https://github.com/sjrsjz).
+Vulkanite is a hardware ray tracing extension for Iris. It requests ray tracing features when Minecraft creates its Vulkan device and records acceleration structure builds and ray passes in the game's command buffer. Ray passes use Iris's native textures and storage buffers. Iris continues to manage the raster and compute passes, the shaderpack and its resources.
 
-## Requirements
+Vulkanite publishes terrain geometry after Sodium accepts the corresponding chunk build. Section identity and build versions keep stale results from restoring unloaded terrain. An accepted empty mesh also removes the previous geometry. An empty scene builds a zero-instance TLAS.
 
-- Minecraft 26.2, Java 25 or newer, Fabric Loader 0.19.3 or newer
-- Sodium `mc26.2-0.9.1-fabric` and Iris `1.11.2+26.2-fabric` (the versions used for development and testing)
-- A shaderpack with Vulkanite ray tracing passes, such as Dirt RT
-- A GPU/driver exposing Vulkan ray tracing, acceleration structures, descriptor indexing, buffer device addresses, and external memory/semaphores
-- OpenGL external memory/semaphore sharing on the **same physical GPU** as Vulkan
+## Runtime
 
-The Windows and Linux sharing paths are supported in code. Native regression tests for this revision were run on Windows with an NVIDIA RTX 4060 Laptop GPU; Linux and other GPU vendors have not been runtime tested.
+- Minecraft **26.3** with Java **25** and Fabric Loader **0.20.1**.
+- Iris **1.12.1-snapshot** from upstream commit [`8ebd1c2`](https://github.com/IrisShaders/Iris/tree/8ebd1c2ba245cd4a20577f2a6eef83e3fae87a1e) and Sodium **0.9.3-beta.5+mc26.3**.
+- Minecraft's Vulkan backend. Use the game argument `--graphicsBackend vulkan`.
+- A Vulkan device with `VK_KHR_acceleration_structure`, `VK_KHR_ray_tracing_pipeline` and the shader features listed in [RayTracingFeatures.java](src/main/java/me/cortex/vulkanite/compat/RayTracingFeatures.java). Vulkanite enables its shaderpack extension when the device enabled this feature set.
 
-## Changes in 0.0.7
+## Build
 
-### Terrain lifetime
-
-Unloading a Sodium render section removes its ray tracing geometry. Work still in the background cannot add that section back. Meshes are published only after Sodium accepts the build result, and accepted empty meshes also remove the previous geometry. Section identity and monotonically increasing versions distinguish stale work from a new section at the same coordinates.
-
-Clearing the world or destroying the shader pipeline invalidates pending terrain builds and clears entity history. An empty scene builds a valid zero-instance TLAS and completes the GL/Vulkan semaphore chain, so the last nonempty scene cannot remain visible.
-
-### Rendering and interop
-
-- Lazy Vulkan initialization: ordinary Iris shaderpacks do not create a Vulkan context.
-- Match the OpenGL and Vulkan devices by UUID and select a compute-capable queue family, with support for devices exposing only one queue.
-- Initialize geometry descriptors before the first frame and respect acceleration-structure scratch and shader-binding-table alignment.
-- Transfer shared image/buffer ownership between OpenGL and Vulkan, preserve compatible image layouts, and wait before reusing per-frame descriptors and uniforms.
-- Initialize static and resized SSBO contents, tolerate unused binding slots, and preserve shared buffers when the window changes size.
-- Support Iris custom texture wrappers, preserve sampler filtering/wrapping, and refresh dynamic texture copies before the GL signal.
-- Convert existing Minecraft textures to shared storage when needed after enabling an RT pack.
-- Encode entity-texture positions as FP16 as expected by Dirt RT; preserve the block-atlas geometry encoding.
-- Reuse entity texture slots across frames without evicting textures referenced in the current frame.
-- Read RT properties after Iris preprocessing, expose `VULKANITE`, and fill missing pass groups without silently merging unrelated passes.
-- Compile large expanded shaders from heap memory rather than overflowing LWJGL's thread stack.
-
-### Cleanup and failure handling
-
-Worker shutdown, rejected meshes, command uploads, shared indices, pipelines, descriptor resources, VMA, device properties, and the Vulkan context now have explicit cleanup paths. Imported Linux file descriptors are owned by OpenGL after a successful import.
-
-Fatal Vulkan submission or fence failures stop new RT work for the session before issuing a GL wait on an unsignaled semaphore. **Automatic Vulkan device recreation is not implemented.** Restart the client after a device loss. Resource leak stack traces are optional with `-Dvulkanite.traceResources=true`.
-
-## Build and verification
-
-Use JDK 25:
+Use JDK 25. In the directory containing this repository, build the upstream Iris snapshot.
 
 ```sh
-./gradlew build
+git clone --branch 26.3-new https://github.com/IrisShaders/Iris.git iris
+git -C iris checkout 8ebd1c2ba245cd4a20577f2a6eef83e3fae87a1e
+cd iris
+bash ./gradlew :fabric:jar --configure-on-demand
 ```
 
-The release jar is `build/libs/vulkanite-0.0.7.jar`. The standard build runs GPU-independent regression tests for section lifetime, shader settings, geometry encoding, and entity texture slot reuse.
-
-On a machine with compatible native GL/Vulkan drivers, run the opt-in GPU test:
+From the Vulkanite repository, build the mod and run the unit tests.
 
 ```sh
-./gradlew interopTest -Pshaderpack="/path/to/Dirt RT"
+bash ./gradlew build
 ```
 
-This traces actual rays through loaded, unloaded, empty, and replacement terrain sections, tests entity and empty-scene TLAS behavior, and verifies the result through both Vulkan readback and an OpenGL GPU consumer. The optional shaderpack argument also compiles all of its ray tracing stages. Set `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` to enable an installed Vulkan validation layer.
+On Windows, use `gradlew.bat` in each repository. The build looks for `../iris/build/libs/iris-fabric-1.12.1-snapshot+mc26.3-local.jar`. Set `-PirisJar=/path/to/iris.jar` to use an Iris jar at another location. The mod jar is `build/libs/vulkanite-0.0.8-vulkan.1.jar`.
 
-The isolated live-client test creates a temporary world under `build/smoke-client`, copies only the supplied pack's `shaders/` directory, and tests teleport/unload, resource reload, window resize, and shader disable/re-enable:
+## Live tests
+
+The bundled probe traces two rays and checks the results through Iris's compute pass and a GPU readback. It expects the old position to become a miss after teleport and chunk unload, and the new position to become a hit.
 
 ```sh
-./gradlew runSmokeClient -PsmokeTest -Pshaderpack="/path/to/Dirt RT"
+bash ./gradlew runSmokeClient -PsmokeTest
+bash ./gradlew runSmokeClient -PsmokeTest -Pshaderpack="/path/to/Dirt RT"
 ```
 
-It uses a hidden test window, writes `build/smoke-client/smoke-result.txt`, and never installs anything into an existing game instance. When reusing an existing asset cache, supply `-PassetsDir="/path/to/assets" -PassetIndex=32 -x downloadAssets`. Test sources are excluded from the release jar.
+Both tests exercise resource reload, window resize and shader toggling. The test uses a hidden game window and an isolated world in `build/smoke-client`. It copies the supplied pack's `shaders/` directory and writes `build/smoke-client/smoke-result.txt`. To reuse an asset cache, pass `-PassetsDir="/path/to/assets" -PassetIndex=34 -x downloadAssets`. Set `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` to enable an installed Vulkan validation layer.
 
-These checks cover geometry lifetime and pipeline execution. They do not establish complete visual correctness for every shader effect, entity render type, or third-party mod.
+Live tests were run on Windows with an NVIDIA RTX 4060 Laptop GPU.
+
+The pinned Iris snapshot can reuse a destroyed push-descriptor layout after shaders are disabled and re-enabled. This produces `VUID-VkWriteDescriptorSet-dstSet-00320` in Iris's raster pipeline. The error also reproduced in an Iris and Sodium client without Vulkanite. [Iris shader-library cache](https://github.com/IrisShaders/Iris/blob/8ebd1c2ba245cd4a20577f2a6eef83e3fae87a1e/common/src/main/java/net/irisshaders/iris/vulkan/VulkanShaderCache.java#L132)
 
 ## Shaderpack interface
 
-The port retains Iris XHFP terrain decoding and the existing Vulkanite geometry layout. `rayN` passes support two or three dispatch dimensions: values in `(0, 1]` scale with the screen size, while values greater than one specify fixed dispatch sizes. Passes in the same execution group run without an intervening barrier; changing groups inserts a shader memory barrier. Shaderpack authors must group only independent passes together.
+The port retains the four descriptor sets and the geometry encoding used by Vulkanite `rayN` passes. Iris exposes `VULKANITE=1` when ray tracing is available. Dispatch values in `(0, 1]` scale the corresponding screen dimension. Values greater than one use a fixed dispatch size. Passes in the same group must be independent. Vulkanite inserts a shader memory barrier between groups.
 
 ## License and credits
 
-Original Vulkanite by mcrcortex; Minecraft 26.2 port by sjrsjz. See [LICENSE.txt](LICENSE.txt) for the license.
+Original Vulkanite by mcrcortex and Minecraft 26.2 port by sjrsjz. See [LICENSE.txt](LICENSE.txt).

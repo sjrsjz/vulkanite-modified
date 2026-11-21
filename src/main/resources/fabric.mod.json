@@ -3,7 +3,7 @@
   "id": "vulkanite",
   "version": "${version}",
   "name": "Vulkanite",
-  "description": "A minecraft mod that brings hardware accelerated raytracing and other vulkan features to minecraft java edition",
+  "description": "Hardware ray tracing extension for Iris on Minecraft's Vulkan backend",
   "authors": ["Cortex"],
   "contact": {},
   "icon": "assets/vulkanite/icon.png",
@@ -14,10 +14,10 @@
     "vulkanite.mixins.json"
   ],
   "depends": {
-    "minecraft": "26.2",
+    "minecraft": "26.3",
     "java": ">=25",
-    "fabricloader": ">=0.19.3",
-    "iris": ">=1.11.2",
-    "sodium": ">=0.9.1"
+    "fabricloader": ">=0.20.1",
+    "iris": ">=1.12.1-snapshot <1.13",
+    "sodium": ">=0.9.3-beta.5 <0.9.4"
   }
 }
