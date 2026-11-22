@@ -5,6 +5,7 @@ import com.mojang.renderpearl.backend.vulkan.VulkanGpuBuffer;
 import com.mojang.renderpearl.backend.vulkan.VulkanGpuSampler;
 import com.mojang.renderpearl.backend.vulkan.VulkanGpuTextureView;
 import me.cortex.vulkanite.acceleration.AccelerationManager;
+import me.cortex.vulkanite.acceleration.TerrainLightBvh;
 import me.cortex.vulkanite.client.rendering.entity.EntityTextureRegistry;
 import me.cortex.vulkanite.compat.RaytracingShaderSet;
 import me.cortex.vulkanite.lib.base.VContext;
@@ -26,10 +27,13 @@ import net.irisshaders.iris.gl.sampler.SamplerHolder;
 import net.irisshaders.iris.gl.texture.TextureAccess;
 import net.irisshaders.iris.gl.texture.TextureType;
 import net.irisshaders.iris.pbr.texture.PBRTextureManager;
+import net.irisshaders.iris.pbr.texture.PBRTextureHolder;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
+import net.irisshaders.iris.vulkan.VulkanCommandBridge;
 import net.irisshaders.iris.vulkan.VulkanRenderBackend;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -65,6 +69,7 @@ public final class VulkanPipeline implements AutoCloseable {
     private final List<FrameBindings> frameBindings = new ArrayList<>();
     private final ArrayDeque<FrameBindings> availableFrames = new ArrayDeque<>();
     private final VRaytracePipeline[] pipelines;
+    private final TerrainLightBvh terrainLights;
     private VDescriptorSetLayout commonLayout;
     private VDescriptorSetLayout textureLayout;
     private VDescriptorSetLayout storageLayout;
@@ -76,12 +81,13 @@ public final class VulkanPipeline implements AutoCloseable {
     private int frameId;
 
     public VulkanPipeline(VContext context, AccelerationManager scene, RaytracingShaderSet[] passes,
-            int[] bufferBindings, List<TextureAccess> customTextures) {
+            int[] bufferBindings, List<TextureAccess> customTextures, boolean usesTerrainLights) {
         this.context = context;
         this.scene = scene;
         this.passes = passes;
         this.bufferBindings = bufferBindings;
         this.pipelines = new VRaytracePipeline[passes.length];
+        terrainLights = usesTerrainLights ? new TerrainLightBvh(context) : null;
         try {
             for (var texture : customTextures) this.customTextures.add(new CustomTexture(texture));
             createFallbacks();
@@ -92,6 +98,7 @@ public final class VulkanPipeline implements AutoCloseable {
                 passes[i].apply(builder);
                 pipelines[i] = builder.build(context, passes[i].maxDepth);
             }
+            if (terrainLights != null) scene.attachTerrainLights(terrainLights);
         } catch (RuntimeException | Error failure) {
             close();
             throw failure;
@@ -105,11 +112,16 @@ public final class VulkanPipeline implements AutoCloseable {
         backend.sync(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
                 VK_ACCESS_2_SHADER_READ_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR);
         var command = context.commands();
-        var tlas = scene.recordScene(command);
+        var atlas = Minecraft.getInstance().getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+        var pbr = PBRTextureManager.INSTANCE.getOrLoadHolder(atlas.getTexture());
+        boolean terrainReady = terrainLights == null || terrainLights.prepareAtlas(atlas, pbr.specularTexture());
+        var tlas = scene.recordScene(command, terrainReady);
+        var lightBuffer = terrainLights == null ? null : terrainLights.record(command);
         var bindings = acquireBindings();
         updateUniforms(bindings.uniforms, camera);
-        updateDescriptors(bindings, tlas, buffers);
+        updateDescriptors(bindings, tlas, buffers, atlas, pbr, lightBuffer);
 
+        var debug = VulkanCommandBridge.getDevice().instance().debug();
         for (int i = 0; i < pipelines.length; i++) {
             if (i > 0 && passes[i].group != passes[i - 1].group) {
                 command.barrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_2_SHADER_WRITE_BIT_KHR,
@@ -117,24 +129,30 @@ public final class VulkanPipeline implements AutoCloseable {
                         VK_ACCESS_2_SHADER_READ_BIT_KHR | VK_ACCESS_2_SHADER_WRITE_BIT_KHR);
             }
             var pass = passes[i];
-            pipelines[i].bind(command);
-            pipelines[i].bindDSet(command, bindings.common.get(0), scene.getGeometrySet(),
-                    bindings.textures.get(0), bindings.storage.get(0));
-            pipelines[i].trace(command, dispatch(pass.dispatchW, width), dispatch(pass.dispatchH, height),
-                    Math.max(1, (int) pass.dispatchD));
+            debug.beginDebugGroup(command.buffer(), () -> "Vulkanite/" + pass.name);
+            try {
+                pipelines[i].bind(command);
+                pipelines[i].bindDSet(command, bindings.common.get(0), scene.getGeometrySet(),
+                        bindings.textures.get(0), bindings.storage.get(0));
+                pipelines[i].trace(command, dispatch(pass.dispatchW, width), dispatch(pass.dispatchH, height),
+                        Math.max(1, (int) pass.dispatchD));
+            } finally {
+                debug.endDebugGroup(command.buffer());
+            }
         }
     }
 
     private void createLayouts() {
-        commonLayout = new DescriptorSetLayoutBuilder()
+        var common = new DescriptorSetLayoutBuilder()
                 .binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, RT_STAGES)
                 .binding(1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, RT_STAGES)
                 .binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, RT_STAGES)
                 .binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, RT_STAGES)
                 .binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, RT_STAGES)
                 .binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, RT_STAGES)
-                .binding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, EntityTextureRegistry.CAPACITY, RT_STAGES)
-                .build(context);
+                .binding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, EntityTextureRegistry.CAPACITY, RT_STAGES);
+        if (terrainLights != null) common.binding(TerrainLightBvh.BINDING, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, RT_STAGES);
+        commonLayout = common.build(context);
         var textures = new DescriptorSetLayoutBuilder();
         for (int i = 0; i < customTextures.size(); i++) {
             textures.binding(i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, RT_STAGES);
@@ -228,10 +246,9 @@ public final class VulkanPipeline implements AutoCloseable {
         }
     }
 
-    private void updateDescriptors(FrameBindings frame, VAccelerationStructure tlas, ShaderStorageBufferHolder buffers) {
+    private void updateDescriptors(FrameBindings frame, VAccelerationStructure tlas, ShaderStorageBufferHolder buffers,
+                                   AbstractTexture atlas, PBRTextureHolder pbr, VBuffer lightBuffer) {
         var textureManager = Minecraft.getInstance().getTextureManager();
-        var atlas = textureManager.getTexture(TextureAtlas.LOCATION_BLOCKS);
-        var pbr = PBRTextureManager.INSTANCE.getOrLoadHolder(atlas.getTexture());
         long atlasView = textureView(atlas.getTextureView());
         long normalView = textureView(pbr.normalTexture().getTextureView());
         long specularView = textureView(pbr.specularTexture().getTextureView());
@@ -245,14 +262,15 @@ public final class VulkanPipeline implements AutoCloseable {
         }
 
         var motion = scene.getEntityMotionBuffer();
-        try (var descriptors = new DescriptorUpdateBuilder(context, 7)) {
+        try (var descriptors = new DescriptorUpdateBuilder(context, lightBuffer == null ? 7 : 8)) {
             descriptors.set(frame.common.get(0)).uniform(0, frame.uniforms).acceleration(1, tlas)
                     .buffer(2, motion == null ? fallbackMotion : motion)
                     .sampledImage(3, atlasView, atlasSampler.sampler)
                     .sampledImage(4, normalView, atlasSampler.sampler)
                     .sampledImage(5, specularView, atlasSampler.sampler)
-                    .sampledImages(6, entities, atlasSampler.sampler)
-                    .apply();
+                    .sampledImages(6, entities, atlasSampler.sampler);
+            if (lightBuffer != null) descriptors.buffer(TerrainLightBvh.BINDING, lightBuffer);
+            descriptors.apply();
         }
 
         try (var descriptors = new DescriptorUpdateBuilder(context, customTextures.size())) {
@@ -355,6 +373,10 @@ public final class VulkanPipeline implements AutoCloseable {
     public void close() {
         if (closed) return;
         closed = true;
+        if (terrainLights != null) {
+            scene.detachTerrainLights(terrainLights);
+            terrainLights.close();
+        }
         context.retire(() -> {
             for (var pipeline : pipelines) if (pipeline != null) pipeline.free();
             frameBindings.forEach(FrameBindings::free);

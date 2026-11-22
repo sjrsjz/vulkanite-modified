@@ -29,8 +29,14 @@ dependencies {
     implementation files(irisJar)
 }
 
+apply from: 'gradle/dirt-rt-light-bvh.gradle'
+
 // Opt-in, isolated end-to-end test mod. It is never included in the release jar.
 if (providers.gradleProperty('smokeTest').isPresent()) {
+    def lightBvhSmoke = providers.gradleProperty('lightBvhSmoke').isPresent()
+    def selectedPack = providers.gradleProperty('shaderpack')
+    def smokeDirectory = lightBvhSmoke ? 'build/smoke-light-bvh-client' : 'build/smoke-client'
+    def dirtLightProbeBinding = file("${smokeDirectory}/dirt-light-probe-binding.txt")
     sourceSets {
         smoke {
             compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
@@ -46,38 +52,105 @@ if (providers.gradleProperty('smokeTest').isPresent()) {
             smokeClient {
                 inherit client
                 source sourceSets.smoke
-                runDir 'build/smoke-client'
+                runDir smokeDirectory
                 vmArgs '--enable-native-access=ALL-UNNAMED', '-Dmixin.debug.verify=true'
-                if (!providers.gradleProperty('shaderpack').isPresent()) vmArg '-Dvulkanite.smokeProbe=true'
+                if (!selectedPack.isPresent()) vmArg '-Dvulkanite.smokeProbe=true'
+                if (lightBvhSmoke) vmArg '-Dvulkanite.lightBvhSmoke=true'
                 programArgs '--graphicsBackend', 'vulkan', '--width', '640', '--height', '360', '--username', 'VulkaniteSmoke'
             }
         }
     }
     tasks.register('prepareSmokeClient') {
+        if (lightBvhSmoke && selectedPack.isPresent()) dependsOn 'prepareDirtRtLightBvh'
         doLast {
-            def testDir = layout.buildDirectory.dir('smoke-client').get().asFile
+            def testDir = file(smokeDirectory)
             new File(testDir, 'config').mkdirs()
-            def selectedPack = providers.gradleProperty('shaderpack')
-            def packName = selectedPack.isPresent() ? 'Dirt RT' : 'Vulkanite probe'
+            def packName = selectedPack.isPresent() ? (lightBvhSmoke ? 'Dirt RT Light BVH' : 'Dirt RT') : 'Vulkanite probe'
             new File(testDir, 'config/iris.properties').text = "enableShaders=true\nshaderPack=${packName}\n"
-            new File(testDir, 'options.txt').text = 'renderDistance:4\nsimulationDistance:5\nmaxFps:120\nenableVsync:false\npauseOnLostFocus:false\n'
+            def options = 'renderDistance:4\nsimulationDistance:5\nmaxFps:120\nenableVsync:false\npauseOnLostFocus:false\n'
+            if (lightBvhSmoke) {
+                def fixture = new File(testDir, 'resourcepacks/Vulkanite-emission')
+                def textures = new File(fixture, 'assets/minecraft/textures/block')
+                textures.mkdirs()
+                new File(fixture, 'pack.mcmeta').text = '{"pack":{"description":"Vulkanite LabPBR test","min_format":[97,1],"max_format":[97,1]}}'
+                def pixels = new java.awt.image.BufferedImage(16, 16, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                for (int y = 0; y < 16; y++) {
+                    for (int x = 0; x < 16; x++) pixels.setRGB(x, y, (128 << 24) | (10 << 8))
+                }
+                javax.imageio.ImageIO.write(pixels, 'png', new File(textures, 'glowstone_s.png'))
+                options += 'resourcePacks:["file/Vulkanite-emission"]\n'
+            }
+            new File(testDir, 'options.txt').text = options
             new File(testDir, 'smoke-result.txt').delete()
-            def packDir = file(selectedPack.getOrElse('src/smoke/shaderpack'))
+            def packDir = lightBvhSmoke && selectedPack.isPresent()
+                    ? layout.buildDirectory.dir('shaderpacks/Dirt RT Light BVH').get().asFile
+                    : file(selectedPack.getOrElse('src/smoke/shaderpack'))
             if (!new File(packDir, 'shaders').isDirectory()) {
                 throw new GradleException("Missing shaderpack shaders directory at ${packDir}")
             }
+            def packShaders = new File(testDir, "shaderpacks/${packName}/shaders")
             project.sync { copy ->
                 copy.from new File(packDir, 'shaders')
-                copy.into new File(testDir, "shaderpacks/${packName}/shaders")
+                copy.into packShaders
+            }
+            if (!selectedPack.isPresent()) {
+                // Iris resolves includes before it evaluates shader macros.
+                java.nio.file.Files.copy(file('src/main/resources/assets/vulkanite/shaders/include/light_bvh.glsl').toPath(),
+                        new File(packShaders, 'light_bvh.glsl').toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+            if (lightBvhSmoke && !selectedPack.isPresent()) {
+                new File(packShaders, 'shaders.properties').append('\nrt.lightBvh = true\n', 'UTF-8')
+                for (def name : ['ray0.rgen', 'composite.csh']) {
+                    def shader = new File(packShaders, name)
+                    def source = shader.getText('UTF-8')
+                    int versionEnd = source.indexOf('\n') + 1
+                    shader.setText(source.substring(0, versionEnd) + '#define VULKANITE_LIGHT_BVH_PROBE\n'
+                            + source.substring(versionEnd), 'UTF-8')
+                }
+            } else if (lightBvhSmoke) {
+                // Only the smoke-test copy records successful visibility and emission evaluation.
+                def properties = new File(packShaders, 'shaders.properties')
+                def usedBindings = (properties.getText('UTF-8') =~ /(?m)^[ \t]*bufferObject\.(\d+)[ \t]*=/)
+                        .collect { match -> match[1] as int }
+                def binding = (12..0).find { !usedBindings.contains(it) }
+                if (binding == null) {
+                    throw new GradleException('Dirt RT smoke readback requires a free Iris SSBO binding')
+                }
+                properties.append("\nbufferObject.${binding} = 16\n", 'UTF-8')
+                dirtLightProbeBinding.text = binding.toString()
+                def lighting = new File(packShaders, 'lib/rt/vulkanite/terrain_lights.glsl')
+                def source = lighting.getText('UTF-8').replace('\r\n', '\n')
+                def include = '#include "/lib/rt/vulkanite/light_bvh.glsl"'
+                boolean integrated = source.contains('bool sampleDirectTerrainLight(')
+                def pdfAssignment = integrated ? '    pdf = light.pdf;' : '    pdf = chosen.pdf;'
+                def radiance = integrated ? 'radiance' : 'Li'
+                if (!source.contains(include) || !source.contains(pdfAssignment)) {
+                    throw new GradleException('Dirt RT smoke readback could not locate terrain light evaluation')
+                }
+                source = source.replace(include, include + """
+
+layout(std430, set = 3, binding = ${binding}) buffer VltNeeSmoke {
+    uint marker;
+} vltNeeSmoke;""")
+                        .replace(pdfAssignment, pdfAssignment + """
+
+    if ((gl_LaunchIDEXT.x & 15u) == 0u && (gl_LaunchIDEXT.y & 15u) == 0u
+            && any(greaterThan(${radiance}, vec3(0.0))) && !any(isnan(${radiance})) && !any(isinf(${radiance}))) {
+        atomicOr(vltNeeSmoke.marker, 0x4c494748u);
+    }""")
+                lighting.setText(source, 'UTF-8')
             }
         }
     }
     tasks.named('runSmokeClient') {
         dependsOn 'prepareSmokeClient'
-        def config = layout.buildDirectory.file('smoke-client/launch.cfg').get().asFile
+        def config = file("${smokeDirectory}/launch.cfg")
         jvmArgumentProviders.add({ ["-Dfabric.dli.config=${config.absolutePath}".toString()] }
                 as CommandLineArgumentProvider)
         doFirst {
+            if (lightBvhSmoke && selectedPack.isPresent()) {
+                systemProperty 'vulkanite.dirtLightProbeBinding', dirtLightProbeBinding.text.trim()
+            }
             def lines = file('.gradle/loom-cache/launch.cfg').readLines()
             if (providers.gradleProperty('assetsDir').isPresent()) {
                 for (int i = 0; i < lines.size() - 1; i++) {

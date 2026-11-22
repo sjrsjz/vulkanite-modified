@@ -28,6 +28,7 @@ public final class AccelerationManager implements AutoCloseable {
     private final SectionBuildState<RenderSection> versions = new SectionBuildState<>();
     private final Map<RenderSection, PendingMesh> pending = new LinkedHashMap<>();
     private EntityGeometryFrame entityFrame;
+    private TerrainLightBvh terrainLights;
 
     public AccelerationManager(VContext context) {
         this.context = context;
@@ -55,6 +56,7 @@ public final class AccelerationManager implements AutoCloseable {
         var positions = data.getAccelerationGeometryData();
         if (positions == null || positions.isEmpty()) {
             tlas.removeSection(section);
+            if (terrainLights != null) terrainLights.remove(section);
             data.releaseAccelerationGeometry();
             return;
         }
@@ -63,18 +65,20 @@ public final class AccelerationManager implements AutoCloseable {
         var geometries = new ArrayList<AccelerationBlasBuilder.Geometry>(positions.size());
         for (var entry : positions.entrySet()) {
             var vertices = entry.getValue();
-            int flags = entry.getKey() == DefaultTerrainRenderPasses.SOLID ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
+            var pass = entry.getKey();
+            int flags = pass == DefaultTerrainRenderPasses.SOLID ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
+            boolean lightEligible = pass == DefaultTerrainRenderPasses.SOLID || pass == DefaultTerrainRenderPasses.CUTOUT;
             geometries.add(new AccelerationBlasBuilder.Geometry(vertices.quadCount(), vertices.data(),
-                    attributes.get(entry.getKey()), flags));
+                    attributes.get(pass), flags, lightEligible));
         }
         pending.put(section, new PendingMesh(version, geometries));
         data.setAccelerationGeometryData(null);
         data.setGeometryBuffersData(null);
     }
 
-    public VAccelerationStructure recordScene(VCmdBuff command) {
+    public VAccelerationStructure recordScene(VCmdBuff command, boolean terrainReady) {
         var jobs = pending.entrySet().iterator();
-        for (int count = 0; count < BUILDS_PER_FRAME && jobs.hasNext(); count++) {
+        for (int count = 0; terrainReady && count < BUILDS_PER_FRAME && jobs.hasNext(); count++) {
             var entry = jobs.next();
             RenderSection section = entry.getKey();
             PendingMesh mesh = entry.getValue();
@@ -82,7 +86,8 @@ public final class AccelerationManager implements AutoCloseable {
             try {
                 if (!section.isDisposed() && versions.isCurrent(section, mesh.version())) {
                     var built = builder.build(command, mesh.geometries(), VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
-                    tlas.updateSection(section, built);
+                    int slot = tlas.updateSection(section, built);
+                    if (terrainLights != null) terrainLights.publish(command, section, slot, mesh.geometries());
                 }
             } finally {
                 mesh.free();
@@ -105,7 +110,7 @@ public final class AccelerationManager implements AutoCloseable {
     }
 
     private void buildEntity(VCmdBuff command, EntityGeometryFrame frame) {
-        var geometry = new AccelerationBlasBuilder.Geometry(frame.quadCount(), frame.vertices(), frame.geometry(), 0);
+        var geometry = new AccelerationBlasBuilder.Geometry(frame.quadCount(), frame.vertices(), frame.geometry(), 0, false);
         var mesh = builder.build(command, List.of(geometry), VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR);
         VBuffer motion = null;
         try {
@@ -136,6 +141,7 @@ public final class AccelerationManager implements AutoCloseable {
         versions.remove(section);
         discardPending(section);
         tlas.removeSection(section);
+        if (terrainLights != null) terrainLights.remove(section);
     }
 
     public void clearWorld() {
@@ -144,6 +150,15 @@ public final class AccelerationManager implements AutoCloseable {
         pending.clear();
         setEntityGeometry(null);
         tlas.clear();
+        if (terrainLights != null) terrainLights.clear();
+    }
+
+    public void attachTerrainLights(TerrainLightBvh lights) {
+        terrainLights = lights;
+    }
+
+    public void detachTerrainLights(TerrainLightBvh lights) {
+        if (terrainLights == lights) terrainLights = null;
     }
 
     @Override
@@ -156,5 +171,6 @@ public final class AccelerationManager implements AutoCloseable {
     public VDescriptorSetLayout getGeometryLayout() { return tlas.getGeometryLayout(); }
     public VBuffer getEntityMotionBuffer() { return tlas.getEntityMotionBuffer(); }
     public int getTerrainSectionCount() { return tlas.getTerrainSectionCount(); }
+    public int getTerrainLightCount() { return terrainLights == null ? 0 : terrainLights.emitterCount(); }
     public Set<SectionPos> getTerrainSections() { return tlas.getTerrainSections(); }
 }

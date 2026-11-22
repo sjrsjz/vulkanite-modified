@@ -63,10 +63,11 @@ final class AccelerationTLASManager implements AutoCloseable {
 
     private record Instance(AccelerationBlasBuilder.Mesh mesh, int slot, float x, float y, float z) {}
 
-    void updateSection(RenderSection section, AccelerationBlasBuilder.Mesh mesh) {
+    int updateSection(RenderSection section, AccelerationBlasBuilder.Mesh mesh) {
         var instance = createInstance(mesh, section.getOriginX(), section.getOriginY(), section.getOriginZ());
         var previous = terrain.put(section, instance);
         if (previous != null) retire(previous);
+        return instance.slot();
     }
 
     void removeSection(RenderSection section) {

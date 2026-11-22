@@ -26,7 +26,7 @@ final class AccelerationBlasBuilder {
         this.context = context;
     }
 
-    record Geometry(int quads, NativeBuffer positions, NativeBuffer attributes, int flags) {
+    record Geometry(int quads, NativeBuffer positions, NativeBuffer attributes, int flags, boolean lightEligible) {
         void free() {
             positions.free();
             attributes.free();

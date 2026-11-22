@@ -17,8 +17,10 @@ import org.slf4j.LoggerFactory;
 /** Automated test world, confined to build/smoke-client. */
 public final class SmokeClient implements ClientModInitializer {
     private final boolean probe = Boolean.getBoolean("vulkanite.smokeProbe");
+    private final boolean lightBvh = Boolean.getBoolean("vulkanite.lightBvhSmoke");
     private int ticks;
     private int phase;
+    private int lightStep;
     private java.util.concurrent.CompletableFuture<Void> reload;
     private ProbeReadback readback;
 
@@ -37,26 +39,51 @@ public final class SmokeClient implements ClientModInitializer {
         if (++ticks < 120) return;
         try {
             var manager = Vulkanite.INSTANCE.getAccelerationManager();
+            int lights = manager.getTerrainLightCount();
             if (phase != 4 && !RaytracingPackState.isActive()) throw new AssertionError("Native RT pipeline is inactive");
             switch (phase) {
                 case 0 -> {
                     if (manager.getTerrainSectionCount() == 0) throw new AssertionError("No live terrain BLAS");
-                    if (!checkRays(55, 1234)) return;
+                    if (lightBvh) {
+                        if (lightStep == 0) {
+                            setLights(client, 0, true);
+                            lightStep = 1;
+                            ticks = 0;
+                            return;
+                        }
+                        requireLights(lights, lightStep != 2);
+                        if (!checkRays(55, 1234, lights)) return;
+                        if (lightStep == 1 || lightStep == 2) {
+                            log("PASS: " + (lightStep == 1 ? "emitter publication" : "emitter removal after block edit"));
+                            setLights(client, 0, lightStep == 2);
+                            lightStep++;
+                            ticks = 0;
+                            return;
+                        }
+                    } else if (!checkRays(55, 1234, 0)) return;
                     log("Live world loaded, " + manager.getTerrainSectionCount() + " terrain sections");
-                    client.getSingleplayerServer().execute(() -> client.getSingleplayerServer().getCommands()
-                            .performPrefixedCommand(client.getSingleplayerServer().createCommandSourceStack(), "tp @p 4096 100 0"));
+                    command(client, "tp @p 4096 100 0");
                 }
                 case 1 -> {
                     if (manager.getTerrainSections().stream().anyMatch(pos -> Math.abs(pos.x()) < 32)) {
                         throw new AssertionError("Unloaded terrain reappeared near the old player position");
                     }
-                    if (!checkRays(1234, 55)) return;
+                    if (lightBvh) requireLights(lights, lightStep == 4);
+                    if (!checkRays(1234, 55, lights)) return;
+                    if (lightBvh && lightStep == 3) {
+                        log("PASS: old terrain lights removed after teleport/unload");
+                        setLights(client, 4096, true);
+                        lightStep = 4;
+                        ticks = 0;
+                        return;
+                    }
                     log("PASS: old terrain removed after teleport/unload");
                     reload = client.reloadResourcePacks();
                 }
                 case 2 -> {
                     if (!reload.isDone()) return;
                     reload.join();
+                    if (lightBvh) requireLights(lights, true);
                     log("PASS: resource-pack reload");
                     if (!org.lwjgl.sdl.SDLVideo.SDL_SetWindowSize(client.getWindow().handle(), 800, 450)) {
                         throw new AssertionError("Could not resize the test window");
@@ -73,16 +100,18 @@ public final class SmokeClient implements ClientModInitializer {
                 case 4 -> {
                     if (RaytracingPackState.isActive()) throw new AssertionError("Ray tracing remained active with shaders disabled");
                     if (manager.getTerrainSectionCount() != 0) throw new AssertionError("Terrain retained after disabling shaders");
+                    if (lightBvh) requireLights(lights, false);
                     log("PASS: shader disable");
                     Iris.toggleShaders(client, true);
                 }
                 case 5 -> {
                     if (manager.getTerrainSectionCount() == 0) throw new AssertionError("No terrain after re-enabling shaders");
-                    if (!checkRays(1234, 55)) return;
+                    if (lightBvh) requireLights(lights, true);
+                    if (!checkRays(1234, 55, lights)) return;
                     log("PASS: shader re-enable");
                     String pack = probe ? "native ray hit/miss through Iris compute" : "live Dirt RT";
                     java.nio.file.Files.writeString(java.nio.file.Path.of("smoke-result.txt"),
-                            "PASS: " + pack + ", unload, reload, resize, disable/re-enable\n");
+                            "PASS: " + pack + (lightBvh ? ", Light BVH" : "") + ", unload, reload, resize, disable/re-enable\n");
                     client.stop();
                 }
             }
@@ -97,16 +126,37 @@ public final class SmokeClient implements ClientModInitializer {
         }
     }
 
-    private boolean checkRays(int oldRay, int newRay) {
-        if (!probe) return true;
+    private static void requireLights(int count, boolean expected) {
+        if ((count > 0) != expected) throw new AssertionError("Terrain light count " + count + ", expected " + (expected ? "positive" : "zero"));
+    }
+
+    private static void command(Minecraft client, String text) {
+        var server = client.getSingleplayerServer();
+        server.execute(() -> server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), text));
+    }
+
+    private static void setLights(Minecraft client, int x, boolean present) {
+        String block = present ? "glowstone" : "air";
+        command(client, "fill " + (x + 1) + " 7 1 " + (x + 4) + " 7 4 " + block);
+        command(client, "setblock " + (x - 4) + " 7 1 " + block);
+        if (present) command(client, "tp @p " + (x + 9.5) + " 4 2.5 90 30");
+    }
+
+    private boolean checkRays(int oldRay, int newRay, int expectedLights) {
+        if (!probe && (!lightBvh || expectedLights == 0)) return true;
         if (readback == null) {
-            readback = new ProbeReadback();
+            readback = new ProbeReadback(probe ? 1 : Integer.getInteger("vulkanite.dirtLightProbeBinding", 7));
             return false;
         }
-        if (!readback.verify(oldRay, newRay)) return false;
+        if (probe ? !readback.verify(oldRay, newRay, expectedLights) : !readback.verifyDirtLighting()) return false;
         readback.close();
         readback = null;
-        log("PASS: Iris compute readback of ray results " + oldRay + "/" + newRay);
+        if (probe) {
+            log("PASS: Iris compute readback of ray results " + oldRay + "/" + newRay);
+            if (lightBvh) log("PASS: Light BVH GPU forward/reverse PDF and " + expectedLights + " terrain emitters");
+        } else {
+            log("PASS: Dirt RT evaluated a visible terrain area light from " + expectedLights + " emitters");
+        }
         return true;
     }
 

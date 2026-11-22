@@ -45,7 +45,8 @@ public class MixinIrisRenderingPipeline {
 
     @Inject(method = "<init>", at = @At("TAIL"))
     private void vulkanite$createPipeline(ProgramSet set, CallbackInfo ci) {
-        var sources = ((IGetRaytracingSource) set).getRaytracingSource();
+        var rayTracing = (IGetRaytracingSource) set;
+        var sources = rayTracing.getRaytracingSource();
         if (sources.length == 0) return;
 
         var passes = new RaytracingShaderSet[sources.length];
@@ -57,7 +58,7 @@ public class MixinIrisRenderingPipeline {
             textures.sort(Comparator.comparing(Map.Entry::getKey));
             var bindings = set.getPack().getBufferObjects().keySet().toIntArray();
             vulkanite$pipeline = new VulkanPipeline(context, Vulkanite.INSTANCE.getAccelerationManager(),
-                    passes, bindings, textures.stream().map(Map.Entry::getValue).toList());
+                    passes, bindings, textures.stream().map(Map.Entry::getValue).toList(), rayTracing.usesTerrainLightBvh());
             EntityGeometryCollector.INSTANCE.setRayTracingActive(true);
             RaytracingPackState.setActive(true);
             LOGGER.info("Vulkanite native Vulkan pipeline initialized with {} ray passes and {} Iris SSBOs",

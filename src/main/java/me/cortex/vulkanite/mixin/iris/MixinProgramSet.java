@@ -32,6 +32,8 @@ public abstract class MixinProgramSet implements IGetRaytracingSource {
 
     @Unique
     private RaytracingShaderSource[] sources;
+    @Unique
+    private boolean terrainLightBvh;
 
     @Inject(method = "<init>", at = @At("TAIL"))
     private void injectRTShaders(AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider,
@@ -73,6 +75,7 @@ public abstract class MixinProgramSet implements IGetRaytracingSource {
 
         if (!sourceList.isEmpty()) {
             Properties props = ((me.cortex.vulkanite.compat.RaytracingProperties) shaderProperties).getRaytracingProperties();
+            terrainLightBvh = Boolean.parseBoolean(props.getProperty("rt.lightBvh", "false").trim());
             int[] groups = me.cortex.vulkanite.compat.RaytracingSettings.groups(props, sourceList.size());
             for (int i = 0; i < sourceList.size(); i++) {
                 float[] disp = me.cortex.vulkanite.compat.RaytracingSettings.dispatch(props, "rt." + i + ".dispatch");
@@ -91,6 +94,11 @@ public abstract class MixinProgramSet implements IGetRaytracingSource {
     @Override
     public RaytracingShaderSource[] getRaytracingSource() {
         return sources != null ? sources : EMPTY_SOURCES;
+    }
+
+    @Override
+    public boolean usesTerrainLightBvh() {
+        return terrainLightBvh;
     }
 
 }
